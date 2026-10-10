@@ -1,0 +1,13 @@
+resources:
+  pipelines:
+    etl:
+      name: flood-etl
+      catalog: ${var.catalog}
+      schema: ${resources.schemas.bronze.name}   # default schema; silver/gold tables name theirs explicitly
+      serverless: true
+      root_path: ../src/pipeline
+      libraries:
+        - glob:
+            include: ../src/pipeline/transformations/**
+      configuration:
+        landing_path: /Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}

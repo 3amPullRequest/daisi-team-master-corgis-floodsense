@@ -1,0 +1,26 @@
+resources:
+  schemas:
+    bronze:
+      catalog_name: ${var.catalog}
+      name: bronze
+      comment: "Placeholder: Raw data, appended unchanged"
+    silver:
+      catalog_name: ${var.catalog}
+      name: silver
+      comment: "Placeholder: Cleaned readings; alerts geocoded to the 47 areas"
+    gold:
+      catalog_name: ${var.catalog}
+      name: gold
+      comment: "Placeholder: Area x 5-min feature table"
+    ml:
+      catalog_name: ${var.catalog}
+      name: ml
+      comment: "Placeholder: Registered models and scored probabilities"
+
+  volumes:
+    landing:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.bronze.name}
+      name: landing
+      volume_type: MANAGED
+      comment: "Placeholder: Raw API JSON and archive files before Auto Loader picks them up"
