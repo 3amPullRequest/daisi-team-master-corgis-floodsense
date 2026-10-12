@@ -48,7 +48,6 @@ governance["Governance (Stretch)"]
 
 
 
-
 ## Ingestion (bronze)
 
 Every input lands raw in the UC volume `/Volumes/<catalog>/<bronze schema>/landing/<name>/…`. In the `flood-etl` pipeline, Auto Loader streams each folder unchanged into `bronze.<name>`. The folder name is the table name. `tests/test_bronze_contract.py` checks that the two sides agree.
