@@ -1,4 +1,229 @@
 # Developer notes
+
+# BIG FINDING: PUB WIPES ITS TELEGRAM CHANNEL FROM TIME TO TIME (AT LEAST 4 TIMES SINCE 2022). ON THE CHANNEL, EVERYTHING BEFORE 19 MARCH 2025 IS GONE EXCEPT 16 POSTS.
+# THE INTERNET ARCHIVE HOLDS MOST OF IT: `backfill.py telegram-wayback` RECOVERS 832 OF THE 1,092 MISSING POSTS (NOVEMBER 2021 TO MARCH 2025).
+# ON 14 NOVEMBER 2023 THE CHANNEL MOVED FROM t.me/sgflood TO t.me/pubfloodalerts, TITLED "Gov.sg-PUB Flood Alerts" UNTIL 3 APRIL 2024. POST IDS DID NOT CHANGE.
+# LOST FOR GOOD: FEBRUARY TO ~AUGUST 2024 (IDS 766-894) AND 5-19 OCTOBER 2024 (IDS 927-955) WERE WIPED BEFORE THE ARCHIVE CAPTURED THEM.
+
+## Developer Checklist
+
+Round 2 is a mentored build sprint from 12 to 26 Oct 2026. Demo Day is on 27 Oct, 4–7pm SGT, and picks the top 3; the finale is on 4 Nov ([DAISI guide](https://daisi.online/guide)). Demo Day is scored on social impact (30%), technical execution on Databricks (30%), solution and user experience (20%), data rigour (10%) and presentation (10%). B2's "winning demo" list asks for:
+
+- a Low/Medium/High classifier by zone;
+- a live risk dashboard that updates as rain streams in;
+- a three-year trend of flood-prone areas;
+- both batch data (training) and streaming data (inference).
+
+Tags follow the Round 1 plan: **W1** is due Sun 18 Oct, **W2** is due Sun 25 Oct, and **Stretch** waits until both are done. Ticked boxes were checked against the repo and the dev deploy on 13 Oct (`uv run pytest`: 65 passed). An unticked box is either not done or still needs checking in the workspace.
+
+### Data Ingestion
+
+The bronze fetchers are written, tested and deployed to dev (see [Ingestion (bronze)](#ingestion-bronze)). What's left is running them to completion, plus the label work.
+
+- [ ] Flash Floods
+    - [ ] PUB Flood Alerts Telegram fully extracted for backfill **W1**
+        - [x] `backfill.py telegram` pages back with `?before=` to the oldest visible post and lands one file under `pub_telegram_posts/archive/`.
+        - [ ] Archive landed in dev and visible in `bronze.pub_telegram_posts` (`source_file LIKE '%/archive/%'`).
+        - [ ] Record what was visible at scrape time: id range, post count and missing ids (522 of 1631 ids were visible on 10 Oct). The run summary's `posts_by_year` is a quick check.
+        - [ ] Counts match the 12 Oct label census: up to Dec 2025, 134 warnings on 43 days and 21 flash floods on 11 days; in 2026, 120 warnings on 35 days and 8 flash floods on 6 days.
+        - [x] Posts PUB deleted, recovered from web archive captures with `backfill.py telegram-wayback` (13 Oct, locally into `.landing-dev`): 872 post ids from 93 captures in 12 minutes, including 832 of the 1,092 ids the channel no longer shows. By keyword, that adds about 435 "Risk of Flash Floods" warnings and 14 flash floods on 11 days (Nov 2021 to Mar 2025) to a training set of 21 floods.
+            - [ ] Land them in dev: `databricks fs cp -r .landing-dev/pub_telegram_posts/wayback dbfs:/Volumes/flood_dev/dev_<you>_bronze/landing/pub_telegram_posts/wayback -p flood_dev`, or re-run the command against `$L`. Then check `bronze.pub_telegram_posts` (`source_file LIKE '%/wayback/%'`).
+            - [ ] Redo the label census with them, and decide whether training can start before Mar 2025: the labels now go back to Nov 2021, and the yearly CSVs cover rainfall for 2021–2024.
+    - [ ] PUB Flood Alerts Telegram Live Ingestion fully functional **W1**
+        - [x] `flood-live` lands posts newer than the cursor in `_state/telegram.json`, so it keeps posts that PUB later deletes.
+        - [ ] Unpause `flood-live` in dev (the 10 Oct deploy left it paused). Then check that the cursor advances and that `pub_telegram_posts` reports `ok` in `bronze.ingest_heartbeat`.
+        - [ ] Catch up after an outage. A tick reads only the newest page (about 20 posts), so after a gap, such as a day of exhausted quota, the posts in between are missed until the archive is re-run (if PUB hasn't deleted them by then). When the page doesn't reach back to the cursor, page back with `?before=` until it does.
+        - [ ] Capture edits. Posts at or below the cursor are never landed again, so a later edit by PUB is missed. Keep text hashes of the newest page's posts in the cursor, and land a post again when its hash changes. Silver keeps the latest version.
+    - [ ] PUB Flood Alerts Telegram Live Ingestion, Laya fallback for pattern matching failure, complete with warnings to the developer
+        - [ ] Categories: Risk of Flash Floods (the 90% drain-level warning), Flash Flood Occurred, Flash Flood Subsided, Heavy Rain Warning, Heavy Rain Eased and Not relevant. **W1**
+        - [ ] Write regex patterns for every category, in one pure-Python module that the fetcher and silver share, so both agree on what "matched" means. Test them on real post texts saved as fixtures. Allow for format drift: the fixture's stamps read `[14:13hours]`, with no space. **W1**
+        - [ ] Run a coverage report over the whole archive: the share of posts each category's patterns match, and the list of posts nothing matches. Add patterns until that list holds only Not relevant posts. **W1**
+        - [ ] Heavy Rain Warning and Heavy Rain Eased: detect them by pattern, but keep them out of the labels (`silver.area_alerts`), since prediction doesn't use them. Bronze still keeps the raw post. **W1**
+        - [ ] [Laya](https://huggingface.co/convaiinnovations/laya), for posts no pattern matches: one `choice` question over the six categories, which returns a label and a `confidence`. **W2**
+            - [ ] Validate it before trusting it. Run it on the posts the patterns already label and measure accuracy per category. Refit its temperature, since the model card says the shipped checkpoints are over-confident. Then set a `confidence` cut-off below which a post goes to hand review.
+            - [ ] Laya returns a category, not text. A post it classifies still needs its location and time from the gazetteer and the stamp regex; if those fail too, the post goes to the hand-check queue.
+            - [ ] Keep it out of the 5-minute fetch path:
+                - [ ] Load Laya only when a post fails every pattern; the checkpoint is about 808 MB and takes about 7 s to load on CPU.
+                - [ ] Cache the checkpoint in a UC volume.
+                - [ ] Add `huggingface.co` to `probe_egress.py`.
+                - [ ] Consider a separate `flood-live` task that runs only when the fetch reports unmatched posts.
+            - [ ] Call Laya once per post. Land each verdict in its own folder (for example `landing/pub_telegram_fallback/`, keyed by `message_id` and text hash), so re-runs and full refreshes reuse it and silver stays deterministic.
+        - [ ] Warn the developer on every fallback, with what's needed to write the missing pattern **W2**:
+            - [ ] message id, t.me link, posting time and full text;
+            - [ ] Laya's label and confidence, and the runner-up;
+            - [ ] the closest pattern and the part of it that failed (for example, the header matched but there was no stamp);
+            - [ ] a suggested pattern skeleton (header escaped, digits and times generalised), the file it goes in and the fixture to add;
+            - [ ] delivery beyond the log: a `WARNING` line, a `fallbacks` count in the heartbeat, and an email (a job notification, or a SQL alert on the warnings table).
+            - [ ] Once the pattern exists, silver reclassifies the post by pattern on its next refresh; the Laya verdict stays for audit.
+    - [ ] PUB flood-alerts API (flash floods only, with lat/lon circles) **W1**
+        - [x] Live ticks, and `api-days` from 2025-09-01. Real records start around Oct 2025.
+        - [ ] Day backfill finished. The 10 Oct laptop run reached 2026-01-10 and stopped (see the next block).
+        - [ ] Check which alert kinds and statuses it returns, and how a record repeats while an alert stays active, so silver counts each alert once.
+- [ ] Weather time series: rainfall, 2-hour forecast, wind direction and speed, lightning, air temperature, relative humidity, radar
+    - [x] Fetchers: live ticks and day backfill for all nine API sources, and yearly CSVs for the six that have them.
+    - [ ] Restart the laptop `api-days` backfill with an API key **W1**:
+        - [ ] Register a data.gov.sg key and store it in the `floodsense` secret scope (see [One-time setup](#one-time-setup)).
+        - [ ] The 10 Oct run had no key (`rate tier: none`) and stopped at 22:59 on `pub_flood_alerts` 2026-01-10. No process is running, and rainfall and the forecast haven't started.
+        - [ ] It resumes where it stopped. With a dev key, labels, rainfall and the forecast land in about 8 hours, and everything in about 3 days.
+    - [ ] Run the `hist_csv` task of `flood-backfill` (2021–2024). Re-run it when data.gov.sg publishes 2025. **W1**
+    - [ ] Check coverage per source and day with the progress query in [Checking it](#checking-it). Rainfall must cover every day from the training start, 2025-03-01. **W1**
+    - [ ] Unpause `flood-daily`, so each night repairs gaps in the live feed. **W1**
+    - [ ] Radar starts on 2026-07-01, so a model trained on 2025 can't use it: archive it only for now (**Stretch**). Lightning starts on 2025-02-01, so it covers training.
+- [ ] Tides
+    - [x] NEA tide table, scraped daily (this month and next); UHSLC Tanjong Pagar hourly, 1984–2023.
+    - [ ] Run the `uhslc` task, then check its row count and the `-32767` gaps. **W1**
+- [ ] Static layers
+    - [x] `fetch_static.py`: URA MP2019 and MP2025 land use, PUB water-level sensors, flood-prone area (ha), SLA vertical-control benchmarks.
+    - [ ] Run the `static` task, and confirm each `static_*` table holds one `version`. **W1**
+    - [ ] PUB list of flood-prone areas (Apr 2025 PDF, 36 names): transcribe it to a CSV seed in `data/static/`. Silver geocodes it. **W1**
+    - [ ] NEA's 47 forecast areas and their label points come with the 2-hour forecast (`area_metadata`), so silver builds them; there's nothing extra to ingest.
+    - [ ] Elevation: choose the SLA benchmarks (points, already landed) or the Copernicus GLO-30 DEM (30 m raster; registration and an attribution notice required). GLO-30 is a one-off download from a laptop into a UC volume. **W2**
+    - [ ] PUB drainage catchment maps: PDF only, so the 11 catchments have to be digitised by hand. Only upstream-catchment rainfall needs them. **Stretch**
+- [ ] **Stretch:** LTA DataMall, for B2's ridership-disruption stretch goal. It needs an account key; first check what it offers at the time resolution of a storm.
+
+### Data Engineering
+
+Silver and gold go in the `flood-etl` pipeline, under `src/pipeline/transformations/{silver,gold}/`. Build them backwards from `ml/contract.py`. All timestamps are SGT.
+
+- [ ] Silver: reference tables **W1**
+    - [ ] `silver.forecast_areas`: the 47 areas (name, label point) from `area_metadata`, plus polygons: Voronoi cells around the label points, clipped to the coastline (the union of the Master Plan land-use polygons works as one). The app's map and the per-area joins both use them. Expect exactly 47 rows.
+    - [ ] `silver.stations`: rain gauges and weather stations, with location and first and last seen dates. The station list changes over time (60 gauges on 1 Mar 2025).
+- [ ] Silver: readings
+    - [ ] `silver.rainfall_5min` (station, ts, mm), from live, backfill and yearly CSVs **W1**:
+        - [ ] explode `payload:body.data.readings` and cast;
+        - [ ] keep `status = 200` pages only (404 and empty pages are day markers);
+        - [ ] deduplicate on (station, ts), keeping the latest `fetched_at`;
+        - [ ] expectations: mm ≥ 0, mm below a plausible 5-minute maximum, station known.
+    - [ ] `silver.weather_5min`: air temperature, humidity, wind speed and wind direction, from 1-minute readings to 5-minute means. Average the wind as u/v components. **W2**
+    - [ ] `silver.forecasts_2h` (area, issued at, valid window, category), with an ordinal rain-intensity code for the 23 categories. Joins use only forecasts issued before the tick. **W2**
+    - [ ] `silver.tides` **W2**:
+        - [ ] Fit utide once on UHSLC and keep the constituents.
+        - [ ] Predict 5-minute heights from 2025 through 2027.
+        - [ ] Fix the datum offset against NEA's high and low waters, then expect the predicted ones within a set tolerance of NEA's.
+- [ ] Silver: labels **W1**
+    - [ ] `silver.telegram_posts`: one row per `message_id`, archive and live merged, latest edit kept. Columns: category, method (`pattern`, `laya` or `manual`), pattern id, stamp time and the list of locations.
+        - [ ] Stamp to datetime: use the posting date, minus a day when the stamp is later than the posting time (posts just after midnight).
+        - [ ] A post that names several locations becomes one alert per location.
+    - [ ] `silver.api_flood_alerts`: alert id, status, time, circle centre and radius.
+    - [ ] `silver.location_gazetteer` (normalised location text → lat/lon → area, method, checked by):
+        - [ ] Match 90% warnings against the PUB water-level sensor list first, since those sensors raise them (convert SVY21 to WGS84).
+        - [ ] Then try OneMap search. `probe_egress.py` already probes it, so check its result before calling it from serverless; if it's blocked, geocode on a laptop.
+        - [ ] Send misses to a quarantine table to be checked by hand (the Round 1 risk plan). Keep hand fixes in a seed CSV in `data/static/`, so they survive a rebuild.
+        - [ ] Report the share geocoded by each method; it's a data-rigour point for the judges.
+    - [ ] `silver.area_alerts`, exactly as `contract.AREA_ALERTS_COLUMNS` defines it:
+        - [ ] A Telegram alert and an API alert for the same area a few minutes apart become one row, with the Telegram stamp as `alert_ts`.
+        - [ ] Expectations: area not null (otherwise quarantine), and kind is `warning` or `flash_flood`.
+        - [ ] Subsided and heavy-rain posts stay out.
+    - [ ] Geocode the 36 flood-prone names with the same gazetteer.
+- [ ] Silver: area context **W2**
+    - [ ] `silver.area_static`, one row per area:
+        - [ ] land-use shares (MP2019 before 1 Dec 2025, MP2025 after);
+        - [ ] elevation summary (min, mean, share of low-lying cells);
+        - [ ] number of water-level sensors;
+        - [ ] number of flood-prone locations.
+- [ ] Gold
+    - [ ] `gold.area_features`: area × 5-minute tick, point-in-time.
+        - [ ] Contract columns: `rain_{15,30,60}min_mm`, the largest total among gauges within 5 km, ending `READING_LAG_MINUTES` before the tick. The rule baseline needs only these. **W1**
+        - [ ] Measure the real reading lag from live ticks (`fetched_at` minus the newest reading's timestamp) and update `READING_LAG_MINUTES`, which is assumed to be 5. **W1**
+        - [ ] Columns for the gated model **W2**:
+            - [ ] antecedent rain (3 h, 24 h) and rain trend;
+            - [ ] upwind rain, using the wind vector;
+            - [ ] forecast category and its age;
+            - [ ] tide height and minutes to the next high tide;
+            - [ ] temperature and humidity;
+            - [ ] the `silver.area_static` columns.
+            - [ ] Per-area history, such as the past alert rate, is computed on the training window only.
+        - [ ] Live/backfill parity: rebuild a live day from backfill files and compare. Replay is only honest if the two match. **W2**
+    - [ ] `gold.flood_prone_trend` (year and hectares: 27 ha in 2022 down to 23.3 ha in 2025) and `gold.flood_prone_locations` (the 36 geocoded names). **W1**
+    - [ ] `gold.pub_lead_times`: minutes from PUB's first alert to each flash flood in the archive, to re-measure the 13.3-minute figure as Round 1 promised. `scoreboard.alert_events` already finds the first alert and first flood per event. **W1**
+- [ ] Pipeline health
+    - [ ] A `flood-etl` update has to finish well inside the 5-minute tick. Time it after adding each table, and move heavy rebuilds to `flood-daily` if it doesn't fit. **W1**
+    - [ ] Tests: stamp, location and alert parsers against fixtures, plus a contract test that silver and gold columns match `contract.py`. **W1**
+    - [ ] Feed expectation pass rates from the pipeline event log to the dashboard's health page. **W2**
+
+### Machine Learning
+
+`src/daisi_team_master_corgis_floodsense/ml/` holds the contract, scoreboard, rule baseline and time split. Every model reads `gold.area_features` and `silver.area_alerts`, writes `ml.predictions`, and is judged by `scoreboard.score`.
+
+- [x] `contract.py`: 47 areas, 5-minute ticks, 60-minute horizon, training from Mar 2025, test from 1 Jan 2026.
+- [x] `scoreboard.py`: events, episodes, lead time, false alarms per area-month, High precision, and 95% CIs (Wilson, and a bootstrap over days).
+- [x] `baseline.py`: fits the rule's window and its Medium and High thresholds on the training window.
+- [x] `split.py`: 5 blocked day-folds in 2025, a 1-day embargo, and 2026 kept for a single test.
+- [ ] Setup **W1**
+    - [ ] Add `mlflow`, `lightgbm` and `scikit-learn` to `pyproject.toml` and the job environments, plus `utide`, `pyproj` and `shapely` for silver.
+    - [ ] Fill `resources/train.job.yml` (the training job) and `resources/ml.yml` (MLflow experiment and UC registered model); both are empty.
+    - [ ] Log `split.summary(...)` with every run.
+- [ ] Rule baseline end to end **W1**
+    - [ ] Fit it on the development period, and log its parameters, scoreboard metrics and threshold curve to MLflow.
+    - [ ] Write its predictions to `ml.predictions`.
+    - [ ] Add a `score` task to `flood-live`, after `refresh_pipeline`, that scores the newest tick for all 47 areas. The app then runs on the rule in Week 1.
+- [ ] Gated LightGBM pair **W2**
+    - [ ] Gate: screen out quiet area-ticks. Start from the baseline curve: the highest rain threshold that still passes nearly every training alert. Log the share of ticks it passes and the training alerts it drops, which should be about zero.
+    - [ ] Rater: LightGBM on the gated ticks.
+        - [ ] Label: `scoreboard.tick_labels`, any PUB alert within 60 minutes. The 90% warnings train the Medium tier.
+        - [ ] Cross-validate with `split.cv(...)`. Use early stopping and a small search, since there are few events.
+        - [ ] Try monotone constraints on the rain columns.
+    - [ ] Calibration: isotonic or Platt, fitted on the pooled out-of-fold predictions. Log a reliability plot and the Brier score.
+    - [ ] Tier cut-offs, from the same pooled predictions:
+        - [ ] Medium, within a false-alarm budget per area-month;
+        - [ ] High, where at least 1 in 3 High episodes are followed by a flash flood (the same logic as `baseline.fit`).
+    - [ ] Reasons: LightGBM's `pred_contrib=True` gives the top features per tick. Turn them into plain English, e.g. "38 mm fell upwind in the last 30 min; high tide in 40 min".
+    - [ ] Before touching 2026, beat the rule on both lead time and false alarms out of fold, as committed in Round 1.
+- [ ] Held-out test, run once **W2**
+    - [ ] Score 2026 to date.
+    - [ ] Log the event-by-event table and the metrics with 95% CIs against both the rule and PUB, and write them to scoreboard tables for the dashboard.
+    - [ ] State the power caveat. The test has 8 floods, so even 8/8 gives a Wilson interval of 0.68–1.00, and the ">80% of floods flagged" target can't be confirmed on them alone. The alert-level metrics (120 warnings on 35 days) are the ones with usable CIs.
+- [ ] Register and serve **W2**
+    - [ ] One pyfunc holds the gate, rater, calibrator, cut-offs and reason templates. Register it in UC as `<catalog>.ml.floodsense` with alias `@champion`, and register the rule too, as the comparison.
+    - [ ] Switch the `flood-live` `score` task to `@champion`. It scores inside the job, with no serving endpoint (Free Edition limits those), and appends `model, area, ts, tier, p_alert, reason`.
+    - [ ] Live scorekeeping: a daily task scores every live prediction against the alerts that followed, the "keeps score in public" promise.
+    - [ ] Storm replay: batch-score one flash-flood day from 22–30 Sep 2026 at every tick, and record how many minutes before PUB's first alert its area turned Medium.
+- [ ] **Stretch:** a separate flash-flood model for High; sea-level-rise scenarios (re-score with tide offsets); upstream-catchment rainfall; radar and lightning features.
+
+### Analytics and BI
+
+`resources/app.yml`, `dashboard.yml` and `genie.yml`, `src/app/` and `src/dashboards/` are all still empty.
+
+- [ ] FloodSense app (a Databricks App, for residents)
+    - [ ] Choose the framework (AppKit, or Python if the team prefers) and deploy a stub to the final demo workspace early, as the guide advises. **W1**
+    - [ ] Map of the 47 areas, coloured by tier from the newest `ml.predictions`, running on the rule baseline. **W1**
+    - [ ] Area panel: tier, `p_alert`, the reason, and actions for drivers, residents and shop owners (fixed templates per tier and audience). **W2**
+    - [ ] Live mode: refreshes every 5 minutes and shows data freshness from `bronze.ingest_heartbeat`. **W2**
+    - [ ] Replay mode: pick a storm, play it tick by tick, and mark PUB's first alert and the moment the area turned Medium. **W2**
+    - [ ] Scoreboard view, plus a line saying FloodSense is an earlier layer on top of PUB's alerts, not a replacement. **W2**
+    - [ ] Works on a phone. **W2**
+- [ ] AI/BI dashboard (for agencies)
+    - [ ] Flood-prone trend panel (`gold.flood_prone_trend`, 2022–2025), with the 36 listed locations on a map. **W1**
+    - [ ] PUB's re-measured warning time (`gold.pub_lead_times`) against the 30-minute target. **W1**
+    - [ ] Scoreboard for the model, the rule and PUB: lead time, floods flagged before PUB, High precision, and false alarms per area-month, each with its CI. **W2**
+    - [ ] Pipeline health: freshness per source, expectation pass rates, and geocoding misses awaiting review. **W2**
+- [ ] Genie space **W2**
+    - [ ] Tables `silver.area_alerts`, `ml.predictions` and the scoreboard tables, with descriptions, instructions and sample SQL.
+    - [ ] Test the exact demo question in advance (e.g. "Which areas had the most false alarms last month?") and keep a screenshot of the answer.
+- [ ] **Stretch:** Telegram push alerts, or a hand-off to PUB's channel.
+
+### Governance (Stretch)
+
+- [ ] Replace the "Placeholder" comments in `resources/uc.yml`, and give silver, gold and ml columns the descriptions in `contract.py`.
+- [ ] Lineage screenshot for the deck: landing volume → bronze → silver → gold → model → `ml.predictions` → app and dashboard.
+- [ ] Grants: the app's service principal and Genie users read `gold` and `ml` only. Restrict the `floodsense` secret scope.
+- [ ] Model governance: a UC model description, tags (training window, test metrics), the training table logged as an MLflow input, and `@champion` moved only after a scoreboard check.
+- [ ] Prod target: create the deploy service principal and run its grant in `setup/bootstrap.sql`. Remove `trigger_pause_status: PAUSED` once ingestion runs there.
+- [ ] Attribution in table comments and the README: data.gov.sg (Singapore Open Data Licence), NEA, PUB, URA, SLA, UHSLC, OneMap, Copernicus (if GLO-30 is used) and Laya (Apache 2.0).
+
+### Demo Day (27 Oct, 4–7pm SGT)
+
+- [ ] Ask our mentor what the Round 2 submission must contain and when it's due. The guide only says "before Demo Day".
+- [ ] Commit and push the ingestion and ML code, which was still untracked on 13 Oct. Update the README (results, architecture, how to run) and the `pyproject.toml` description. Make the repo accessible to the judges.
+- [ ] Choose the final demo workspace and target. Dev names carry a `[dev …]` prefix, and dev deploys leave schedules paused.
+- [ ] Quota:
+    - [ ] Keep `live_schedule` at 15 minutes outside demo windows.
+    - [ ] Run no backfills or full refreshes on 26–27 Oct; going over the daily quota stops compute for the rest of the day.
+- [ ] Restart the app within 24 hours of the demo (Free Edition stops apps after 24 hours). Check that the SQL warehouse, pipeline and data are ready, and walk the main journey from a fresh browser session.
+- [ ] Keep recordings or screenshots of the steps most likely to fail: live mode, Genie and the replay.
+- [ ] No tokens, keys or personal data on screen. Tell the judges what isn't live: the precomputed replay, labels classified by Laya or fixed by hand, and prototype features.
+- [ ] Rehearse the story and the presenter handoffs by 25 Oct: problem (13.3 min) → users → architecture (batch backfill for training, streaming ticks for inference) → replay → live → scoreboard → Genie → impact (minutes gained over PUB per 2026 flood, with CIs). Prepare answers on the 8-flood test, geocoding misses, and why NEA's 47 areas.
+
 ## Overview of Architecture
 
 ```mermaid
@@ -21,7 +246,7 @@ governance["Governance (Stretch)"]
 | Response | Type | Live Dataset | Historical Equivalent | Time Range | Time Interval | Live Source | Historical Source  | Remarks |
 |----------|----------|----------|----------|----------|----------|----------|----------|----------|
 | Flash Floods| Boolean | PUB Flood Alerts (Live API)   | Same | May 22, 2025 to Present | Minutes | [PUB](https://data.gov.sg/datasets/d_f1404e08587ce555b9ea3f565e2eb9a3/view) | NA | [See Appendix](#flash-floods-live-api) |
-|Flash Floods & Water Level Sensor alerts (inferred to trigger at 90% water level) | Boolean | PUB Flood Alerts (Telegram)   | Same   | February 25, 2022 to Present| 1 Minute for Training, 5 Minutes for Live | [Telegram PUB Flood Alerts](https://t.me/s/pubfloodalerts?before=1632)   | NA | [See Appendix](#flash-floods--water-level-sensor-alerts) |
+|Flash Floods & Water Level Sensor alerts (inferred to trigger at 90% water level) | Boolean | PUB Flood Alerts (Telegram)   | Same   | November 17, 2021 to Present, with gaps | 1 Minute for Training, 5 Minutes for Live | [Telegram PUB Flood Alerts](https://t.me/s/pubfloodalerts?before=1632)   | Wayback Machine captures of `t.me/sgflood` (until 14 Nov 2023) and `t.me/pubfloodalerts` | [See Appendix](#flash-floods--water-level-sensor-alerts) |
 
 
 
@@ -45,6 +270,124 @@ governance["Governance (Stretch)"]
 |----------|----------|----------|----------|----------|----------|----------|----------|----------|
 | List of Flood Prone Areas | Categorical (36 named locations); Numerical (total ha) | NA | PUB List of Flood Prone Areas (Apr 2025); PUB Flood Prone Areas (annual, 2022–2025) | 2022 to 2025 | Annual | NA | [PUB list](https://pub.gov.sg/-/media/PUB/PDF/Flood-Management/List-of-Flood-Prone-Areas-as-at-Apr-2025.pdf), [PUB hectares](https://data.gov.sg/datasets/d_c4aed98f1533eb3a66f65dbb1a30da46/view) | [See Appendix](#list-of-flood-prone-areas) |
 | PUB Water Level Sensors Locations | Geospatial (points) | NA | PUB Water Level Sensors | Snapshot (last updated 13 Apr 2026) | Refreshed half-yearly | NA | [PUB](https://data.gov.sg/collections/1541/view) | [See Appendix](#pub-water-level-sensors-locations) |
+
+## Ingestion (bronze)
+
+New to this part of the code? [INGESTION_GUIDE.md](INGESTION_GUIDE.md) explains the concepts behind it and has an architecture diagram.
+
+Every input lands raw in the UC volume `/Volumes/<catalog>/<bronze schema>/landing/<name>/…`. In the `flood-etl` pipeline, Auto Loader streams each folder unchanged into `bronze.<name>`. The folder name is the table name. `tests/test_bronze_contract.py` checks that the two sides agree.
+
+| Landing folder → bronze table | Source | Cadence |
+|---|---|---|
+| `nea_rainfall`, `nea_air_temperature`, `nea_relative_humidity`, `nea_wind_speed`, `nea_wind_direction`, `nea_two_hr_forecast`, `nea_lightning`, `nea_radar_70km`, `pub_flood_alerts` | data.gov.sg v2 real-time API | Every tick: newest page (25 records). Daily: the full past days |
+| `pub_telegram_posts` | t.me/s/pubfloodalerts, PUB's channel (90% warnings, flash floods, NEA heavy rain); web.archive.org for the posts PUB deleted | Every tick (new posts only), plus a one-off channel scrape and a one-off recovery of deleted posts |
+| `nea_tide_timings` | NEA tide-timings page (this month and next) | Once a day |
+| `*_hist` (6 tables) | data.gov.sg yearly "Historical …" CSVs | One-off, for every published year from 2021 |
+| `uhslc_tanjong_pagar_hourly` | UHSLC research-quality hourly sea level, 1984–2023 | One-off |
+| `static_*` (5 tables) | URA land use 2019/2025, PUB water-level sensors, flood-prone area (ha), SLA benchmarks | When data.gov.sg updates them |
+| `ingest_heartbeat` | One line per tick: per-source status, record counts, latency | Every tick |
+
+Radar PNGs go to `landing/radar_png/70km/YYYY/MM/DD/`, with no table. Their presigned URLs expire after about 25 min, so every tick saves the new frames. Fetcher cursors live in `landing/_state/`.
+
+JSON lines are parsed into a VARIANT `payload` column, so query them like `payload:body.data.readings`. CSV columns stay as text. Typing, dedup and parsing belong in silver.
+
+### Where things run
+
+The egress probe confirmed on 2026-10-10 that Free Edition serverless can reach data.gov.sg, its S3 downloads, t.me, nea.gov.sg and UHSLC. So the fetchers run as jobs:
+
+- **`flood-live`** (`resources/live.job.yml`): every `${var.live_schedule}` (default 5 min), runs `fetch` then `refresh_pipeline`.
+- **`flood-daily`** (`resources/daily.job.yml`): at 00:30 SGT, re-pulls the last two days in full, so gaps in the live feed get filled.
+- **`flood-backfill`** (`resources/backfill.job.yml`, manual): static layers, Telegram archive, UHSLC and yearly CSVs, then a pipeline refresh.
+
+**The long API backfill runs on a laptop, not serverless.** That is 2025-01-01 → yesterday, about 190k requests. It mostly waits on rate limits, and on serverless that waiting still burns the Free Edition daily quota. Expect about 3 days with a dev API key, about 1 day with a prod key, and about 6 days without a key. Sources run in priority order, so labels, rainfall and forecast land in roughly the first 8 hours with a dev key.
+
+**So does the web archive recovery.** `backfill.py telegram-wayback` reads about 90 captures from web.archive.org, 4 s apart, in about 12 minutes. The egress probe doesn't check web.archive.org, and on serverless the waiting would burn quota.
+
+If the probe ever starts failing (`uv run python src/ingestion/probe_egress.py`, run as a one-off job), switch to local mode:
+
+```bash
+uv run python src/ingestion/fetch_live.py --landing /Volumes/flood_dev/dev_<you>_bronze/landing \
+    --profile flood_dev --every 5m --daily-repair --trigger-job <flood-live job id>
+```
+
+In local mode, also remove the `fetch` task and the schedule from `live.job.yml`.
+
+### One-time setup
+
+1. **data.gov.sg API key:** register for one (a dev key is self-serve). Then:
+
+   ```bash
+   databricks secrets create-scope floodsense
+   databricks secrets put-secret floodsense datagovsg-api-key
+   ```
+
+   Jobs read it from there. For local runs, `export DATAGOVSG_API_KEY=…` (and `DATAGOVSG_KEY_TIER=prod` for a prod key). Without a key everything still works, at the lowest rate limit.
+2. **Databricks CLI on PATH, for local runs.** The `flood_dev` profile uses `auth_type = databricks-cli`, so the SDK shells out to `databricks`. Either install the standalone CLI, or set `DATABRICKS_CLI_PATH` to the binary inside the VS Code extension.
+
+### Commands
+
+Local runs need `--profile flood_dev`; `--landing` can also come from `$FLOODSENSE_LANDING`.
+
+```bash
+L=/Volumes/flood_dev/dev_<you>_bronze/landing
+uv run python src/ingestion/fetch_live.py   --landing $L --profile flood_dev          # one tick
+uv run python src/ingestion/fetch_static.py --landing $L --profile flood_dev
+uv run python src/ingestion/backfill.py telegram --landing $L --profile flood_dev
+uv run python src/ingestion/backfill.py telegram-wayback --landing $L --profile flood_dev   # posts PUB deleted, ~12 min
+uv run python src/ingestion/backfill.py uhslc    --landing $L --profile flood_dev
+uv run python src/ingestion/backfill.py csv      --landing $L --profile flood_dev --sources nea_rainfall --years 2024
+# the long one, in the background; it resumes where it stopped, so Ctrl-C or a reboot is fine
+nohup uv run python src/ingestion/backfill.py api-days --landing $L --profile flood_dev > ~/floodsense-api-days.log 2>&1 &
+```
+
+For a local smoke test, use `--landing ./.landing-dev --sink local`; that folder is gitignored. To run on Databricks without a schedule, use `databricks bundle run backfill -t dev`, or a one-off `databricks jobs submit` with the same script and arguments.
+
+Every backfill step is idempotent:
+
+- **csv:** skips years already landed and logs years data.gov.sg hasn't published yet. As of 2026-10-10 that is 2025 and 2026, so those days come from `api-days`. Re-run it when a new yearly file appears. If a file is published outside its collection, add it with `--dataset-id nea_rainfall:2025:d_…`.
+- **api-days:** writes one gzipped file per source-day and skips days that already exist. A day without data still gets its file (holding the 404 or the empty page), so it isn't retried. Use `--max-runtime 5h` to stop cleanly, `--last-days 2` for the daily repair, and `--sources …`/`--start`/`--end` to target a range.
+- **telegram-wayback:** writes one file per web archive capture it reads, even an empty one, and rebuilds what it knows from those files, so a re-run reads only captures that can still add a post. `--until` (default 2025-03-31) is the last capture day it reads; later captures repeat what `telegram` lands.
+
+### Checking it
+
+```sql
+-- live feed freshness, per source
+SELECT r.value:source::string AS source, max(h.fetched_at) AS last_tick,
+       max_by(r.value:ok::boolean, h.fetched_at) AS last_ok, max_by(r.value:records::int, h.fetched_at) AS records
+FROM flood_dev.dev_<you>_bronze.ingest_heartbeat AS h, LATERAL variant_explode(h.payload:results) AS r
+GROUP BY 1 ORDER BY 1;
+
+-- API backfill progress for one source (swap the table name)
+SELECT count(DISTINCT regexp_extract(source_file, 'date=([0-9-]+)', 1)) AS days_landed,
+       min(regexp_extract(source_file, 'date=([0-9-]+)', 1)) AS first_day,
+       max(regexp_extract(source_file, 'date=([0-9-]+)', 1)) AS last_day
+FROM flood_dev.dev_<you>_bronze.pub_flood_alerts WHERE source_file LIKE '%/backfill/%';
+```
+
+Bronze only shows what the pipeline has streamed so far. A tail of the local log, `~/floodsense-api-days.log`, is the quickest live view.
+
+### Things that bit us (keep in mind when touching the fetchers)
+
+- **data.gov.sg:**
+  - It returns 403 to Python's default `Python-urllib` User-Agent, so `client.USER_AGENT` is sent on every request.
+  - The rate limit is one budget per client across all data.gov.sg hosts (the metadata API counts too). A 429 body says `code 24`, "try again in 10 seconds".
+  - `poll-download` answers HTTP 201.
+  - A day with no data is HTTP 404 with body `code 17`.
+- **No `__file__` on serverless:** a `python_file` task runs through `exec()` in an IPython kernel, so `__file__` is undefined. The entry scripts locate `src/` through `inspect` instead.
+- **Flood-alert labels:**
+  - The flood-alerts API carries only flash-flood events (with lat/lon circles). The 90% drain-level warnings ("[Risk of Flash Floods]") exist only on Telegram.
+  - Flood-alert history in the API really starts around October 2025. Earlier dates answer HTTP 200 with zero records.
+  - PUB wipes its Telegram channel from time to time and keeps only a few posts: between Feb and Aug 2022, in mid-2024, between 9 Oct and 13 Nov 2024, and around 23 Mar 2025 (since then only single posts have gone). On the channel, everything before id 1111 (19 Mar 2025) is gone except 16 posts. The live capture keeps posts after PUB deletes them, so keep `flood-live` running.
+  - The channel was `t.me/sgflood` until 14 Nov 2023, then `t.me/pubfloodalerts` (titled "Gov.sg-PUB Flood Alerts" until 3 Apr 2024). Post ids carried over, so key posts on `message_id` alone. An unrelated channel later took `sgflood`, so `telegram-wayback` reads `sgflood` captures only up to the rename, and drops any capture whose channel title lacks "Flood Alerts".
+  - The web archive never captured 264 ids before they were wiped: 58 from Oct 2021 to Feb 2022, 128 from Feb to about Aug 2024 (766–894), 29 from 5–19 Oct 2024 (927–955), and 49 single posts or album parts. The `telegram-wayback` summary lists them.
+  - Headlines drift, so the silver patterns need every version. The 90% warning: "RISING WATERS / POTENTIAL FLASH FLOODS" (Nov 2021), "🌊 Risk of Flash Floods" (Dec 2021), "⚠️ Risk of Flash Floods" (Feb 2023), "[Risk of Flash Floods]" (Nov 2023). A flood: "🚨 Flash flood at the following location(s)", then "[FLASH FLOOD OCCURRED]" (Nov 2024). Subsided: "🔽 Flash Flood at … has subsided", then "Flash flood subsided at …" (Nov 2023).
+  - Silver: a post recovered from the web archive was seen at its `captured_at`, not its `fetched_at`, so order post versions by `captured_at` where it's set.
+- **UHSLC:** the research-quality file is under `rqds/pacific/` (the `indian/` path is a 404 page). There is no Tanjong Pagar data after 2023, so silver fills 2024 onward with utide predictions.
+- **Free Edition quota:**
+  - Dev-mode deploys leave the `flood-live` and `flood-daily` schedules paused. Unpause them in the Jobs UI when you want the feed running, or set `presets: trigger_pause_status: UNPAUSED` on the dev target.
+  - One pipeline update runs at a time.
+  - Exceeding the daily quota stops compute for the rest of the day. Outside demo windows, consider `live_schedule: "0 0/15 * * * ?"`.
+  - Measured cost: a 1.2 GB yearly CSV took about 3 min to land on serverless and about 20 s to stream into bronze. So the yearly CSVs are cheap. The 5-minute live cadence and the long API backfill are what need watching.
 
 
 # Appendix

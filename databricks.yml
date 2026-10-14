@@ -10,6 +10,12 @@ variables:
     description: Unity Catalog catalog for this target
   timezone:
     default: Asia/Singapore
+  secret_scope:
+    description: Secret scope holding the data.gov.sg API key (secret key `datagovsg-api-key`)
+    default: floodsense
+  live_schedule:
+    description: Quartz cron for flood-live; every 5 min (use 0/15 outside demo windows to save Free Edition quota)
+    default: "0 0/5 * * * ?"
 
 targets:
   dev:

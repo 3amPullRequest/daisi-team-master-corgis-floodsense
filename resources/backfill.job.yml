@@ -1,0 +1,43 @@
+# One-off and daily history jobs. The long throttled API backfill (backfill.py api-days over 2025 -> yesterday)
+# runs on a local machine instead: it mostly waits on data.gov.sg rate limits, which on serverless would burn the
+# Free Edition daily compute quota. See DEVELOPERNOTES.md.
+resources:
+  jobs:
+    backfill:
+      name: flood-backfill
+      max_concurrent_runs: 1
+      timeout_seconds: 14400
+      tasks:
+        - task_key: static
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/ingestion/fetch_static.py
+            parameters: [--landing, "/Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}", --secret-scope, "${var.secret_scope}", --runner, databricks-job]
+        - task_key: telegram
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/ingestion/backfill.py
+            parameters: [telegram, --landing, "/Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}", --runner, databricks-job]
+        - task_key: uhslc
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/ingestion/backfill.py
+            parameters: [uhslc, --landing, "/Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}", --runner, databricks-job]
+        - task_key: hist_csv
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/ingestion/backfill.py
+            # every published year from 2021 on; years data.gov.sg hasn't published are logged and left to api-days
+            parameters: [csv, --landing, "/Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}", --secret-scope, "${var.secret_scope}", --runner, databricks-job]
+        - task_key: refresh_pipeline
+          depends_on: [{task_key: static}, {task_key: telegram}, {task_key: uhslc}, {task_key: hist_csv}]
+          run_if: ALL_DONE
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.etl.id}
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - requests
+              - openpyxl

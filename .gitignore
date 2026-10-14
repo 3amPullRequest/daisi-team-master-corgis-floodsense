@@ -221,3 +221,6 @@ __marimo__/
 
 # Databricks
 .databricks/
+
+# Local ingestion smoke-test landing folder
+.landing-dev/

@@ -1,27 +1,35 @@
-# resources:
-#   jobs:
-#     live:
-#       name: flood-live
-#       max_concurrent_runs: 1
-#       schedule:
-#         quartz_cron_expression: "0 0/5 * * * ?"
-#         timezone_id: ${var.timezone}
-#       tasks:
-#         - task_key: fetch
-#           environment_key: default
-#           spark_python_task:
-#             python_file: ../src/ingestion/fetch_live.py
-#             parameters:
-#               - --landing
-#               - /Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}
-#         - task_key: refresh_pipeline
-#           depends_on:
-#             - task_key: fetch
-#           pipeline_task:
-#             pipeline_id: ${resources.pipelines.etl.id}
-#       environments:
-#         - environment_key: default
-#           spec:
-#             environment_version: "2"
-#             dependencies:
-#               - requests
+resources:
+  jobs:
+    live:
+      name: flood-live
+      max_concurrent_runs: 1
+      queue:
+        enabled: false   # a run that would overlap the previous one is skipped, not queued
+      timeout_seconds: 900
+      schedule:
+        quartz_cron_expression: ${var.live_schedule}
+        timezone_id: ${var.timezone}
+      tasks:
+        - task_key: fetch
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/ingestion/fetch_live.py
+            parameters:
+              - --landing
+              - /Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}
+              - --secret-scope
+              - ${var.secret_scope}
+              - --runner
+              - databricks-job
+        - task_key: refresh_pipeline
+          depends_on:
+            - task_key: fetch
+          run_if: ALL_DONE   # land what did arrive even if one source failed
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.etl.id}
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - requests

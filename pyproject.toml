@@ -8,8 +8,11 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "databricks>=0.2",
+    "databricks-sdk>=0.151.0",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.6",
     "pyspark>=4.2.0",
+    "requests>=2.34.2",
 ]
 
 [project.scripts]
@@ -26,7 +29,16 @@ lint = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# src/pipeline is the SDP root_path, so pipeline code imports `utilities.*` the same way on Databricks
+pythonpath = ["src", "src/pipeline"]
+
+[tool.ruff]
+# ingestion scripts also run on Databricks serverless (environment 2 = Python 3.11)
+target-version = "py311"
+
+[tool.pyright]
+# Databricks puts the pipeline root (src/pipeline) on sys.path; mirror that for the editor
+extraPaths = ["src", "src/pipeline"]
 
 [tool.ruff.lint.per-file-ignores]
 # pipeline files use the `spark` object Databricks injects at runtime
