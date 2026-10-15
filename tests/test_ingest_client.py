@@ -53,6 +53,21 @@ def test_429_is_retried_after_ten_seconds():
     assert 10 <= max(clock.sleeps) <= 12
 
 
+def test_a_429_with_a_key_warns_once_that_the_key_may_not_be_recognised(caplog):
+    busy = FakeResponse(429, {"code": 24, "errorMsg": "Rate limit exceeded"})
+    pages = [busy, api_page("readings", 1), busy, api_page("readings", 1)]
+    http, *_ = fake_http([("rainfall", pages)], api_key="secret")
+    realtime(http, "rainfall")
+    realtime(http, "rainfall")
+    warnings = [r for r in caplog.records if "check_key.py" in r.getMessage()]
+    assert len(warnings) == 1 and "dev-key limit" in warnings[0].getMessage()
+    # without a key a 429 is just the public limit
+    caplog.clear()
+    http, *_ = fake_http([("rainfall", [busy, api_page("readings", 1)])])
+    realtime(http, "rainfall")
+    assert not [r for r in caplog.records if "check_key.py" in r.getMessage()]
+
+
 def test_retry_after_header_wins():
     busy = FakeResponse(503, {"error": "down"}, headers={"Retry-After": "30"})
     http, _, clock = fake_http([("rainfall", [busy, api_page("readings", 1)])])

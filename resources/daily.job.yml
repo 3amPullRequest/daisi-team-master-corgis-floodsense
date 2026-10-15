@@ -1,4 +1,5 @@
-# Re-pulls the last two complete days from the v2 API, so gaps in the 5-minute live feed get filled.
+# Re-pulls the last two complete days from the v2 API, so gaps in the 5-minute live feed get filled, then refreshes
+# gold (flood-gold) from silver.
 resources:
   jobs:
     daily:
@@ -15,6 +16,12 @@ resources:
             python_file: ../src/ingestion/backfill.py
             # re-pull the last two complete days in full; flood-live's next refresh streams them into bronze
             parameters: [api-days, --last-days, "2", --landing, "/Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}", --secret-scope, "${var.secret_scope}", --runner, databricks-job]
+        - task_key: refresh_gold
+          depends_on:
+            - task_key: repair
+          run_if: ALL_DONE   # gold reads silver as flood-live last refreshed it
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.gold_pipeline.id}
       environments:
         - environment_key: default
           spec:

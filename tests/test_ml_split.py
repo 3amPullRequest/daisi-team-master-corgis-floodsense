@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from daisi_team_master_corgis_floodsense.ml import contract as C
-from daisi_team_master_corgis_floodsense.ml.split import make_split
+from daisi_team_master_corgis_floodsense.ml.split import make_split, temporal_split
 
 # A one-month development period: March 2025, tested on April.
 MARCH = {"start": "2025-03-01", "test_start": "2025-04-01"}
@@ -130,17 +130,20 @@ def test_aware_timestamps_are_read_as_sgt():
     assert s.folds[1].valid(utc).tolist() == [True]
 
 
-def test_round_1_defaults():
+def test_defaults_are_the_80_20_split():
     alerts = ALERTS.assign(alert_ts=ALERTS["alert_ts"] + pd.DateOffset(months=3))
-    s = make_split(alerts, labels_as_of="2026-10-13 09:00", folds=3)
+    s = make_split(alerts, folds=3)
     assert (s.start, s.dev_end) == (
-        pd.Timestamp("2025-03-01"),
-        pd.Timestamp("2025-12-31"),
+        pd.Timestamp("2021-10-27"),
+        pd.Timestamp("2025-12-19"),
     )
     assert (s.test_start, s.test_end) == (
-        pd.Timestamp("2026-01-01"),
+        pd.Timestamp("2025-12-20"),
         pd.Timestamp("2026-10-13"),
     )
+    # labels refreshed earlier than the split's end shorten the test
+    early = make_split(alerts, folds=3, labels_as_of="2026-09-30 09:00")
+    assert early.test_end == pd.Timestamp("2026-09-30")
 
 
 @pytest.mark.parametrize(
@@ -154,3 +157,38 @@ def test_round_1_defaults():
 def test_refuses_splits_that_cannot_be_honest(kw, message):
     with pytest.raises(ValueError, match=message):
         split(**kw)
+
+
+def recorded(
+    first: str, last: str, missing: tuple[str, str] | None = None
+) -> pd.Series:
+    """One flag per tick from first to last (2025 dates), False inside `missing`."""
+    idx = pd.date_range(day(first), day(last), freq="5min")
+    flags = pd.Series(True, index=idx)
+    if missing:
+        flags[day(missing[0]) : day(missing[1])] = False
+    return flags
+
+
+def test_temporal_split_leaves_the_test_share_of_recorded_time_after_it():
+    # ten whole days: 20% is the last two
+    assert temporal_split(recorded("03-01", "03-10 23:55")) == day("03-09")
+    # a missing week counts for neither side: of the 5 recorded days, 20% is the last one
+    flags = recorded("03-01", "03-10 23:55", missing=("03-03", "03-07 23:55"))
+    assert flags.sum() == 5 * 288
+    assert temporal_split(flags) == day("03-10")
+
+
+def test_temporal_split_reads_aware_ticks_as_sgt():
+    flags = recorded("03-01", "03-10 23:55")
+    flags.index = flags.index.tz_localize("Asia/Singapore").tz_convert("UTC")
+    assert temporal_split(flags) == day("03-09")
+
+
+def test_temporal_split_refuses_a_split_with_no_development_period():
+    with pytest.raises(ValueError, match="no development period"):
+        temporal_split(recorded("03-01", "03-02 23:55"), test_share=0.5)
+    with pytest.raises(ValueError, match="no recorded ticks"):
+        temporal_split(
+            recorded("03-01", "03-01 23:55", missing=("03-01", "03-01 23:55"))
+        )

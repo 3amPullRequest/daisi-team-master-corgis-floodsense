@@ -12,6 +12,14 @@ Per NEA forecast area:
 
 Training labels (tick_labels) use the same one-hour window, so an episode is a hit exactly when one of its ticks has
 label 1.
+
+Where labels are missing (posts PUB deleted before the web archive captured them), nothing is guessed: an event counts
+only if every alert from an hour before PUB's first alert was recorded, since an earlier alert could be lost; a warning no alert
+confirmed counts as a false alarm only if its whole watch was recorded; and missing time isn't time at risk.
+
+Where features are missing (NEA outages, days not backfilled yet: the model is *blind*), an event counts only if the
+model saw every tick that could have put a warning in force at it, from an hour before PUB's first alert; blind time
+isn't time at risk either. A warning needs no such check: the model saw what it warned on.
 """
 
 from __future__ import annotations
@@ -51,12 +59,14 @@ def tick_labels(
 
     The training label for a learned model. `ticks` needs area and ts; `alerts` is silver.area_alerts.
     """
-    left = pd.DataFrame({"area": ticks["area"], "ts": _ns(ticks["ts"])}).reset_index(
-        drop=True
-    )
+    left = pd.DataFrame(
+        {"area": _keys(ticks["area"]), "ts": _ns(ticks["ts"])}
+    ).reset_index(drop=True)
     left["row"] = np.arange(len(left))
     chosen = alerts[alerts["kind"].isin(kinds)]
-    right = pd.DataFrame({"area": chosen["area"], "alert_ts": _ns(chosen["alert_ts"])})
+    right = pd.DataFrame(
+        {"area": _keys(chosen["area"]), "alert_ts": _ns(chosen["alert_ts"])}
+    )
     m = pd.merge_asof(
         left.sort_values("ts"),
         right.dropna().sort_values("alert_ts"),
@@ -124,7 +134,8 @@ def warning_episodes(
 
 @dataclass(frozen=True)
 class Scoreboard:
-    """One model over one window: a row per PUB event (`events`) and a row per warning episode (`episodes`)."""
+    """One model over one window: a row per PUB event (`events`) and a row per warning episode (`episodes`). Rows
+    with `judged` False fell where labels are missing, and count in no metric but the *_unjudged counts."""
 
     events: pd.DataFrame
     episodes: pd.DataFrame
@@ -140,8 +151,11 @@ class Scoreboard:
         warning times a bootstrap over whole days, because events on one storm day aren't independent.
         """
         out: dict[str, float] = {}
+        judged = self.events["judged"]
         for kind in ("alert", "flood"):
-            ev = self.events[self.events["kind"] == kind]
+            of_kind = self.events["kind"] == kind
+            ev = self.events[of_kind & judged]
+            out[f"{kind}_events_unjudged"] = int((of_kind & ~judged).sum())
             lead = ev["lead_min"].fillna(0.0)  # a miss adds no warning
             # FloodSense sits on top of PUB's alerts, so the public gets whichever warned first
             warning = np.maximum(lead, ev["pub_lead_min"])
@@ -160,17 +174,22 @@ class Scoreboard:
                 lo_hi = _day_bootstrap(warning, _sgt_day(ev["time"]), n_boot, seed)
                 out.update(_bounds(f"{kind}_mean_warning_min", lo_hi))
 
-        medium = self.episodes[self.episodes["tier"] == "Medium"]
+        judged = self.episodes["judged"]
+        is_medium = self.episodes["tier"] == "Medium"
+        medium = self.episodes[is_medium & judged]
         warned_hours = (medium["until"] - medium["start"]).sum() / _HOUR
         out["warnings"] = len(medium)
+        out["warnings_unjudged"] = int((is_medium & ~judged).sum())
         out["false_alarms_per_area_month"] = (
             int((~medium["hit"]).sum()) / self.area_months
         )
         out["warned_hours_per_area_month"] = float(warned_hours) / self.area_months
 
-        high = self.episodes[self.episodes["tier"] == "High"]
+        is_high = self.episodes["tier"] == "High"
+        high = self.episodes[is_high & judged]
         hits = int(high["hit"].sum())
         out["high_warnings"] = len(high)
+        out["high_warnings_unjudged"] = int((is_high & ~judged).sum())
         out["high_precision"] = hits / len(high) if len(high) else math.nan
         if ci:
             out.update(_bounds("high_precision", wilson(hits, len(high))))
@@ -185,13 +204,18 @@ def score(
     end,
     n_areas: int = C.N_AREAS,
     horizon: pd.Timedelta = HORIZON,
+    missing=None,
+    blind=None,
 ) -> Scoreboard:
     """Judge one model's predictions (area, ts, tier) against silver.area_alerts over the window [start, end).
 
     Predictions can leave out Low ticks. Events count when they happen inside the window; a warning issued near `end`
-    can still be confirmed by an alert after it.
+    can still be confirmed by an alert after it. `missing` lists the ticks whose labels are incomplete
+    (gold.label_ticks where label_window = 'missing') and `blind` those whose features are (gold.feature_ticks where
+    feature_window = 'missing'), both the same for every area; see the module docstring.
     """
     start, end = pd.Timestamp(start), pd.Timestamp(end)
+    gaps, dark = _tick_list(missing), _tick_list(blind)
     ts = _ns(predictions["ts"])
     preds = predictions.assign(ts=ts)[_within(ts, start, end)]
     medium = warning_episodes(preds, min_tier="Medium", horizon=horizon)
@@ -211,6 +235,16 @@ def score(
     ev["lead_min"] = (ev["time"] - ev["warned_from"]) / _MINUTE
     ev["pub_lead_min"] = (ev["time"] - ev["first_alert"]) / _MINUTE
     ev["before_pub"] = ev["warned_from"] < ev["first_alert"]  # a miss is NaT, so False
+    # An event is judged only if every alert stamped from an hour before PUB's first alert up to the event is known:
+    # the label windows of the ticks an hour before them, (t, t + horizon], cover exactly that. Later ticks' windows
+    # reach past the event, so a gap after it mustn't count.
+    reach = TICK - pd.Timedelta(1, "ns")  # the tick at or before, and the one after
+    ev["judged"] = ~_any_within(
+        gaps, ev["first_alert"] - horizon - reach, ev["time"] - horizon + reach, "both"
+    )
+    # A warned tick in [first alert - horizon, event) puts a warning in force at the event in time to count, so the
+    # model must have seen all of them.
+    ev["judged"] &= ~_any_within(dark, ev["first_alert"] - horizon, ev["time"], "left")
 
     a = pd.DataFrame(
         {"area": alerts["area"], "ts": _ns(alerts["alert_ts"]), "kind": alerts["kind"]}
@@ -221,6 +255,15 @@ def score(
     episodes = pd.concat(
         [medium.assign(tier="Medium"), high.assign(tier="High")], ignore_index=True
     )
+    # a confirmed warning is a hit whatever else is missing; an unconfirmed one needs its whole watch recorded
+    episodes["judged"] = episodes["hit"] | ~_any_within(
+        gaps, episodes["start"], episodes["last"], "both"
+    )
+    unknown = np.union1d(gaps, dark)  # missing or blind: not time at risk
+    in_window = (_sgt_ns(pd.Series([start]))[0] <= unknown) & (
+        unknown < _sgt_ns(pd.Series([end]))[0]
+    )
+    recorded = (end - start) - int(in_window.sum()) * TICK
     return Scoreboard(
         events=ev[
             [
@@ -233,10 +276,13 @@ def score(
                 "lead_min",
                 "pub_lead_min",
                 "before_pub",
+                "judged",
             ]
         ],
-        episodes=episodes[["tier", "area", "start", "last", "until", "ticks", "hit"]],
-        area_months=n_areas * ((end - start) / MONTH),
+        episodes=episodes[
+            ["tier", "area", "start", "last", "until", "ticks", "hit", "judged"]
+        ],
+        area_months=n_areas * (recorded / MONTH),
     )
 
 
@@ -255,11 +301,13 @@ def _in_force(area: pd.Series, t: pd.Series, episodes: pd.DataFrame) -> pd.Serie
     """Start of the episode in force at each time t in its area (started strictly before t, not expired), else NaT."""
     if t.empty or episodes.empty:
         return pd.Series(pd.NaT, index=t.index, dtype=t.dtype)
-    left = pd.DataFrame({"area": area, "t": t}).reset_index(drop=True)
+    left = pd.DataFrame({"area": _keys(area), "t": t}).reset_index(drop=True)
     left["row"] = np.arange(len(left))
     m = pd.merge_asof(
         left.sort_values("t"),
-        episodes[["area", "start", "until"]].sort_values("start"),
+        episodes[["area", "start", "until"]]
+        .assign(area=lambda e: _keys(e["area"]))
+        .sort_values("start"),
         left_on="t",
         right_on="start",
         by="area",
@@ -295,6 +343,36 @@ def _day_bootstrap(
     return float(lo), float(hi)
 
 
+_NAT = np.datetime64("NaT", "ns").astype(np.int64)
+
+
+def _tick_list(ticks) -> np.ndarray:
+    """Sorted SGT nanoseconds of a list of ticks (None for none), NaT dropped."""
+    ns = _sgt_ns(pd.Series(ticks if ticks is not None else [], dtype=object))
+    return np.sort(ns[ns != _NAT])
+
+
+def _sgt_ns(ts: pd.Series) -> np.ndarray:
+    """Nanoseconds of naive SGT time, so aware and naive timestamps compare (the contract reads naive ones as SGT)."""
+    ts = pd.to_datetime(ts)
+    if ts.dt.tz is not None:
+        ts = ts.dt.tz_convert("Asia/Singapore").dt.tz_localize(None)
+    return ts.dt.as_unit("ns").to_numpy().astype(np.int64)
+
+
+def _any_within(
+    gaps: np.ndarray, lo: pd.Series, hi: pd.Series, closed: str
+) -> np.ndarray:
+    """Per row, whether a sorted gap tick lies in [lo, hi) (closed='left') or [lo, hi] (closed='both')."""
+    if not len(gaps) or lo.empty:
+        return np.zeros(len(lo), dtype=bool)
+    first = np.searchsorted(gaps, _sgt_ns(lo), side="left")
+    last = np.searchsorted(
+        gaps, _sgt_ns(hi), side="right" if closed == "both" else "left"
+    )
+    return last > first
+
+
 def _bounds(name: str, lo_hi: tuple[float, float]) -> dict[str, float]:
     return {f"{name}_lo": lo_hi[0], f"{name}_hi": lo_hi[1]}
 
@@ -307,6 +385,12 @@ def _sgt_day(ts: pd.Series) -> pd.Series:
     if ts.dt.tz is not None:
         ts = ts.dt.tz_convert("Asia/Singapore")
     return ts.dt.normalize()
+
+
+def _keys(area: pd.Series) -> pd.Series:
+    """Areas as plain objects: merge_asof needs its `by` keys of one dtype, and callers pass str, object or a category
+    (train.py loads areas as a category to fit ten million rows in memory)."""
+    return area.astype(object)
 
 
 def _ns(ts: pd.Series) -> pd.Series:

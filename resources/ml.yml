@@ -1,0 +1,13 @@
+# The MLflow experiment training logs to, and the Unity Catalog model the gated LightGBM pair is registered as
+# (contract.REGISTERED_MODEL). Dev deploys prefix both ([dev <you>] floodsense, dev_<you>_floodsense).
+resources:
+  experiments:
+    training:   # bundle keys are unique across resource types, and the model is `floodsense`
+      name: /Users/${workspace.current_user.userName}/floodsense
+
+  registered_models:
+    floodsense:
+      name: floodsense
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.ml.name}
+      comment: "The gated LightGBM pair: a gate screens out quiet area-ticks, a rater gives the rest a calibrated probability of a PUB alert within the hour, cut into Low/Medium/High. Trained by flood-train on gold.model_rows (recorded label and feature windows only). @challenger is the newest version, @champion the newest that beat the rainfall rule out of fold."

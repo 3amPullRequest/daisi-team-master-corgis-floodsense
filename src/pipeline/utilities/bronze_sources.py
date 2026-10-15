@@ -17,6 +17,8 @@ JSON_TABLES: dict[str, str] = {
     "pub_flood_alerts": "PUB flash-flood alerts (CAP, with lat/lon circles): raw v2 API pages",
     "pub_telegram_posts": "PUB Flood Alerts Telegram posts: 90% drain warnings, flash floods, NEA heavy-rain warnings (live, channel scrape, and posts PUB deleted, from web archive captures)",
     "nea_tide_timings": "NEA tide table rows (time, height, high/low), scraped daily",
+    "onemap_search": "OneMap search answers for PUB alert locations, one line per query (raw answer in body), for "
+    "silver's gazetteer",
     "static_mp2019_land_use": "URA Master Plan 2019 land use, one GeoJSON feature per row",
     "static_mp2025_land_use": "URA Master Plan 2025 land use, one GeoJSON feature per row",
     "static_pub_water_level_sensors": "PUB drain water-level sensors (SVY21 X/Y), one spreadsheet row per row",

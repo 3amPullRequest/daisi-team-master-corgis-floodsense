@@ -19,3 +19,27 @@ updated daily, so all of Singapore falls into a few cells. That is too coarse an
 
 ## Target Solution
 FloodSense aims to forecast, every 5 minutes, which of NEA’s 47 weather-forecast areas is likely to get a PUB flash-flood alert in the next 60 minutes, rating each Low, Medium or High.
+
+## Setup
+
+You need the [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) with a profile for the workspace (the commands below use `flood_dev`), and [uv](https://docs.astral.sh/uv/). Then run `uv sync`: it sets up Python 3.12 and the package versions of Databricks serverless environment 6, which the training job runs on, plus databricks-connect for running Spark code on serverless from your machine.
+
+**data.gov.sg API key.** Ingestion works without one, but at the lowest rate limit, so the long backfill takes about twice as long. To add one:
+
+1. Log in at [data.gov.sg](https://data.gov.sg), click **Create API Key**, choose **Developer** or **Production**, and copy the key; it is shown only once.
+2. Store it in the workspace's `floodsense` secret scope, where both the Databricks jobs and laptop runs read it:
+
+   ```bash
+   databricks secrets create-scope floodsense -p flood_dev                 # skip if the scope exists
+   databricks secrets put-secret floodsense datagovsg-api-key -p flood_dev  # prompts for the key
+   ```
+
+3. Check that data.gov.sg recognises it. It should report 12 calls per 10 s for a dev key, or 30 for a prod key:
+
+   ```bash
+   uv run python src/ingestion/check_key.py --profile flood_dev
+   ```
+
+   With a prod key, add `--key-tier prod` to ingestion runs.
+
+[DEVELOPER_NOTES.md](DEVELOPER_NOTES.md#one-time-setup) has the rest of the setup and the ingestion commands.

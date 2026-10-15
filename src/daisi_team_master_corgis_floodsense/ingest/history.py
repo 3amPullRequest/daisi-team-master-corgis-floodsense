@@ -15,6 +15,7 @@ from datetime import date, timedelta
 from . import sources as S
 from .cli import add_common_args, parse_duration, setup
 from .client import Http, collection_years, dataset_file_url, iter_day_pages
+from .onemap import onemap_search
 from .scrapers import parse_telegram_page
 from .sinks import FilesApiSink, Sink, read_json, write_json
 from .wayback import telegram_wayback
@@ -298,6 +299,10 @@ def main(argv: list[str] | None = None) -> int:
         default=S.WAYBACK_UNTIL,
         help="last capture day to read, UTC (default %(default)s; later captures repeat what `telegram` lands)",
     )
+    commands.add_parser(
+        "onemap",
+        help="OneMap searches for the alert locations in the landed Telegram posts not searched yet (for silver)",
+    )
     uhslc_cmd = commands.add_parser(
         "uhslc", help="UHSLC hourly sea level, Tanjong Pagar"
     )
@@ -351,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
         summary = telegram_wayback(
             http, sink, runner=args.runner, until=args.until, deadline=deadline
         )
+    elif args.command == "onemap":
+        summary = onemap_search(http, sink, runner=args.runner, deadline=deadline)
     else:
         summary = uhslc(http, sink, force=args.force)
     print(json.dumps(summary, indent=1))

@@ -224,3 +224,124 @@ def test_an_episode_is_a_hit_exactly_when_one_of_its_ticks_is_labelled():
     for ep in episodes.itertuples():
         ticks = (preds["area"] == ep.area) & preds["ts"].between(ep.start, ep.last)
         assert ep.hit == bool(labels[ticks].any())
+
+
+def gap(first: str, last: str, day: int = 0) -> pd.Series:
+    """Ticks from first to last whose labels are missing."""
+    return pd.Series(pd.date_range(at(first, day), at(last, day), freq="5min"))
+
+
+def test_an_event_after_a_missing_hour_is_not_judged():
+    # a warning from 16:00 flags King's Road; but if 15:50-16:40 is missing, PUB may have alerted before 16:46
+    preds = warned("Bukit Timah", "16:00", "17:10")
+    whole = score(preds, KINGS_ROAD, **WEEK).metrics(ci=False)
+    assert whole["alert_events"] == 1 and whole["alert_events_unjudged"] == 0
+    blind = score(preds, KINGS_ROAD, **WEEK, missing=gap("15:50", "16:40"))
+    m = blind.metrics(ci=False)
+    assert (m["alert_events"], m["alert_events_unjudged"]) == (0, 1)
+    # the flood event's lead-up includes PUB's first alert, so it goes too
+    assert (m["flood_events"], m["flood_events_unjudged"]) == (0, 1)
+    # missing ticks after the event don't matter
+    late = score(preds, KINGS_ROAD, **WEEK, missing=gap("17:15", "18:00"))
+    assert late.metrics(ci=False)["alert_events"] == 1
+    # nor do missing ticks before it whose windows go missing only after it: 15:45 and 15:50 cover the hour to 16:46
+    after = score(preds, KINGS_ROAD, **WEEK, missing=gap("15:55", "16:45"))
+    assert after.metrics(ci=False)["alert_events"] == 1
+    # the tick an hour before is what decides
+    hour = score(preds, KINGS_ROAD, **WEEK, missing=gap("15:45", "15:45"))
+    assert hour.metrics(ci=False)["alert_events_unjudged"] == 1
+
+
+def test_a_quiet_warning_is_a_false_alarm_only_if_its_whole_watch_was_recorded():
+    preds = warned("Bedok", "12:00", "12:30", day=2)  # no alert follows
+    assert score(preds, KINGS_ROAD, **WEEK).metrics(ci=False)["warnings"] == 1
+    blind = score(preds, KINGS_ROAD, **WEEK, missing=gap("12:20", "12:20", day=2))
+    m = blind.metrics(ci=False)
+    assert (
+        m["warnings"],
+        m["warnings_unjudged"],
+        m["false_alarms_per_area_month"],
+    ) == (0, 1, 0)
+    # a confirmed warning is a hit whatever else is missing
+    hit = score(
+        warned("Bukit Timah", "16:30", "16:40"),
+        KINGS_ROAD,
+        **WEEK,
+        missing=gap("16:35", "16:35"),
+    )
+    assert hit.metrics(ci=False)["warnings"] == 1 and hit.episodes["hit"].all()
+
+
+def test_missing_time_is_not_time_at_risk():
+    preds = warned("Bedok", "12:00", "12:30", day=2)
+    whole = score(preds, KINGS_ROAD, **WEEK, n_areas=1)
+    # a missing day elsewhere in the week leaves 6 recorded days of exposure
+    blind = score(
+        preds, KINGS_ROAD, **WEEK, n_areas=1, missing=gap("00:00", "23:55", day=5)
+    )
+    assert whole.area_months == pytest.approx(7 / 30.4375)
+    assert blind.area_months == pytest.approx(6 / 30.4375)
+    assert blind.metrics(ci=False)["false_alarms_per_area_month"] == pytest.approx(
+        30.4375 / 6
+    )
+
+
+def test_missing_ticks_may_be_aware():
+    sgt = gap("15:50", "16:40").dt.tz_localize("Asia/Singapore").dt.tz_convert("UTC")
+    m = score(
+        warned("Bukit Timah", "16:00", "17:10"), KINGS_ROAD, **WEEK, missing=sgt
+    ).metrics(ci=False)
+    assert m["alert_events_unjudged"] == 1
+
+
+def test_an_event_the_model_was_blind_to_is_not_judged():
+    # King's Road: PUB's first alert at 16:46, so warned ticks from 15:46 could have flagged it in time
+    preds = warned("Bukit Timah", "16:00", "17:10")
+    blind = score(preds, KINGS_ROAD, **WEEK, blind=gap("16:20", "16:30")).metrics(
+        ci=False
+    )
+    assert (blind["alert_events"], blind["alert_events_unjudged"]) == (0, 1)
+    assert (blind["flood_events"], blind["flood_events_unjudged"]) == (0, 1)
+    # the first tick that counts is 15:50 (in force until 16:50); 15:45 expires a minute before the alert
+    assert (
+        score(preds, KINGS_ROAD, **WEEK, blind=gap("15:50", "15:50")).metrics(ci=False)[
+            "alert_events_unjudged"
+        ]
+        == 1
+    )
+    early = score(preds, KINGS_ROAD, **WEEK, blind=gap("15:00", "15:45"))
+    assert early.metrics(ci=False)["alert_events"] == 1
+    # blind after both events: both judged
+    late = score(preds, KINGS_ROAD, **WEEK, blind=gap("17:15", "18:00")).metrics(
+        ci=False
+    )
+    assert (late["alert_events"], late["flood_events"]) == (1, 1)
+    # blind at 16:50, between them: a warned tick then could have kept a warning in force at the 17:11 flood
+    mid = score(preds, KINGS_ROAD, **WEEK, blind=gap("16:50", "16:50")).metrics(
+        ci=False
+    )
+    assert (mid["alert_events"], mid["flood_events_unjudged"]) == (1, 1)
+
+
+def test_blind_warnings_still_count_and_blind_time_is_not_at_risk():
+    preds = warned("Bedok", "12:00", "12:30", day=2)  # no alert follows
+    # the model saw what it warned on, so a blind tick inside the watch doesn't excuse the false alarm
+    m = score(preds, KINGS_ROAD, **WEEK, blind=gap("12:20", "12:20", day=2)).metrics(
+        ci=False
+    )
+    assert (m["warnings"], m["warnings_unjudged"]) == (1, 0)
+    day = gap("00:00", "23:55", day=5)
+    blind = score(preds, KINGS_ROAD, **WEEK, n_areas=1, blind=day)
+    assert blind.area_months == pytest.approx(6 / 30.4375)
+    # a tick both missing and blind is out of the time at risk once
+    both = score(preds, KINGS_ROAD, **WEEK, n_areas=1, missing=day, blind=day)
+    assert both.area_months == pytest.approx(6 / 30.4375)
+
+
+def test_areas_may_come_as_categories():
+    # train.py loads gold rows with the area as a category; silver's alerts carry it as text
+    preds = warned("Bukit Timah", "16:20", "16:50").astype({"area": "category"})
+    m = score(preds, KINGS_ROAD.astype({"area": object}), **WEEK).metrics(ci=False)
+    assert m["alert_flagged_before_pub"] == 1 and m["false_alarms_per_area_month"] == 0
+    ticks = preds[["area", "ts"]]
+    assert tick_labels(ticks, KINGS_ROAD.astype({"area": object})).sum() == len(ticks)

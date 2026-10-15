@@ -1,0 +1,48 @@
+# Trains the gated LightGBM pair and the rainfall rule on gold, logs both to MLflow and registers the pair in Unity
+# Catalog (src/daisi_team_master_corgis_floodsense/ml/train.py). Manual: it refreshes gold first, then trains.
+#   databricks bundle run train -t dev -p flood_dev
+#   databricks bundle run train -t dev -p flood_dev --params score_test=true   # the single look at the test split
+resources:
+  jobs:
+    train:
+      name: flood-train
+      max_concurrent_runs: 1
+      timeout_seconds: 7200
+      parameters:
+        - name: gate_recalls
+          default: "0.85,0.9,0.95"   # the gate levels to try; the out-of-fold scoreboard picks one
+        - name: score_test
+          default: "false"
+      tasks:
+        - task_key: refresh_gold
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.gold_pipeline.id}
+        - task_key: train
+          depends_on:
+            - task_key: refresh_gold
+          environment_key: ml
+          spark_python_task:
+            python_file: ../src/ml/train.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --gold-schema
+              - ${resources.schemas.gold.name}
+              - --silver-schema
+              - ${resources.schemas.silver.name}
+              - --ml-schema
+              - ${resources.schemas.ml.name}
+              - --experiment
+              - ${resources.experiments.training.name}
+              - --model
+              - ${resources.registered_models.floodsense.name}
+              - --gate-recall
+              - "{{job.parameters.gate_recalls}}"
+              - --score-test
+              - "{{job.parameters.score_test}}"
+      environments:
+        - environment_key: ml
+          spec:
+            environment_version: "6"   # Python 3.12, pandas 2.3, scikit-learn 1.7, mlflow-skinny 3.12
+            dependencies:
+              - lightgbm==4.7.0

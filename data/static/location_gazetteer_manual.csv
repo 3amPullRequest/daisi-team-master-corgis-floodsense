@@ -1,0 +1,4 @@
+# Alert locations placed by hand, for those in silver.alerts_unplaced, or to correct silver.location_gazetteer.
+# A row here wins over every other method (method 'manual'). location is PUB's text as written (silver matches it by
+# location_key, so spelling variants of the same place need only one row); lat/lon in WGS84 degrees.
+location,lat,lon,note

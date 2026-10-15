@@ -123,6 +123,11 @@ NEA_TIDES_URL = "https://www.nea.gov.sg/corporate-functions/weather/tide-timings
 UHSLC = "uhslc_tanjong_pagar_hourly"
 UHSLC_URL = "https://uhslc.soest.hawaii.edu/data/csv/rqds/pacific/hourly/h699a.csv"  # research quality, 1984-2023
 
+ONEMAP = (
+    "onemap_search"  # OneMap answers for PUB alert locations, for silver's gazetteer
+)
+ONEMAP_SEARCH_URL = "https://www.onemap.gov.sg/api/common/elastic/search"
+
 HEARTBEAT = "ingest_heartbeat"
 RADAR_PNG = "radar_png"  # image archive; no bronze table
 STATE = "_state"  # fetcher cursors; outside every table folder, so Auto Loader never reads it
@@ -133,7 +138,7 @@ def bronze_landing_names() -> set[str]:
     names = {s.name for s in API_SOURCES}
     names |= {s.hist_name for s in API_SOURCES if s.csv_collection}
     names |= {layer.name for layer in STATIC_LAYERS}
-    return names | {TELEGRAM, TIDES, UHSLC, HEARTBEAT}
+    return names | {TELEGRAM, TIDES, UHSLC, ONEMAP, HEARTBEAT}
 
 
 # --- time and paths ------------------------------------------------------------------------------------------------

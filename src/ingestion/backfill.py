@@ -4,6 +4,7 @@ csv               data.gov.sg yearly CSVs for published years (2021-2024 today)
 api-days          v2 API day pages for every later day, through yesterday
 telegram          the whole PUB Flood Alerts Telegram channel
 telegram-wayback  posts PUB deleted from the channel, from web archive captures (run it on a laptop)
+onemap            OneMap searches for the alert locations not searched yet, for silver's gazetteer
 uhslc             UHSLC hourly sea level at Tanjong Pagar
 
 uv run python src/ingestion/backfill.py api-days --landing /Volumes/flood_dev/dev_<you>_bronze/landing --profile flood_dev

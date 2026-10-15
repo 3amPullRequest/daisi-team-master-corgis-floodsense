@@ -122,6 +122,7 @@ class Http:
             )
             for bucket, limits in RATE_LIMITS.items()
         }
+        self._warned_limited = False
 
     def get(
         self,
@@ -160,6 +161,8 @@ class Http:
             # any 2xx is success: poll-download answers 201
             if 200 <= resp.status_code < 300 or resp.status_code in accept:
                 return resp
+            if resp.status_code == 429 and bucket and self.api_key:
+                self._warn_limited()
             if (
                 resp.status_code == 429 or resp.status_code >= 500
             ) and attempt < self.max_attempts:
@@ -180,6 +183,16 @@ class Http:
                 continue
             raise HttpError(url, resp.status_code, resp.text)
         raise AssertionError("unreachable")
+
+    def _warn_limited(self) -> None:
+        """Once per client: a 429 below the key's limit. data.gov.sg treats a key it doesn't recognise as no key."""
+        if not self._warned_limited:
+            self._warned_limited = True
+            log.warning(
+                "data.gov.sg rate-limited this client below the %s-key limit: either the key isn't recognised "
+                "(mistyped or expired; check it with src/ingestion/check_key.py), or another client shares it",
+                self.tier,
+            )
 
     def get_api_json(
         self,

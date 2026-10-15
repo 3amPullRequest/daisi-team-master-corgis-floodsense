@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 API_KEY_ENV = "DATAGOVSG_API_KEY"
 API_KEY_SECRET = "datagovsg-api-key"
+SECRET_SCOPE = "floodsense"  # databricks.yml's `secret_scope`
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -36,7 +37,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         help="~/.databrickscfg profile",
     )
     parser.add_argument(
-        "--secret-scope", help=f"Databricks secret scope holding '{API_KEY_SECRET}'"
+        "--secret-scope",
+        default=os.environ.get("FLOODSENSE_SECRET_SCOPE", SECRET_SCOPE),
+        help=f"Databricks secret scope holding '{API_KEY_SECRET}' (default %(default)s; '' for none)",
     )
     parser.add_argument(
         "--key-tier",
@@ -58,23 +61,46 @@ def default_runner() -> str:
     )
 
 
-def resolve_api_key(secret_scope: str | None) -> str | None:
-    """$DATAGOVSG_API_KEY, else the Databricks secret, else None (unauthenticated: the lowest rate limits)."""
-    key = os.environ.get(API_KEY_ENV)
+def resolve_api_key(secret_scope: str | None, profile: str | None = None) -> str | None:
+    """The data.gov.sg API key: $DATAGOVSG_API_KEY, else `datagovsg-api-key` in the Databricks secret scope, else None
+    (unauthenticated: the lowest rate limits). On Databricks the job's dbutils reads the scope; elsewhere the
+    workspace API does, as `profile`, so jobs and laptop runs share one key. Logs where the key came from, never
+    the key."""
+    key = os.environ.get(API_KEY_ENV, "").strip()
     if key:
+        log.info("data.gov.sg API key from $%s", API_KEY_ENV)
         return key
-    if secret_scope:
-        try:
+    if not secret_scope:
+        return None
+    on_databricks = bool(os.environ.get("DATABRICKS_RUNTIME_VERSION"))
+    if not on_databricks and not profile:
+        log.warning(
+            "no data.gov.sg key: pass --profile to read secret scope %r, or set $%s",
+            secret_scope,
+            API_KEY_ENV,
+        )
+        return None
+    try:
+        if on_databricks:
             from databricks.sdk.runtime import dbutils
+        else:
+            from databricks.sdk import WorkspaceClient
 
-            return dbutils.secrets.get(secret_scope, API_KEY_SECRET)
-        except Exception as exc:  # noqa: BLE001 - no scope, no permission, or not on Databricks: go unauthenticated
-            log.warning(
-                "no data.gov.sg key from secret scope %r (%s)",
-                secret_scope,
-                type(exc).__name__,
-            )
-    return None
+            dbutils = WorkspaceClient(profile=profile).dbutils
+        # a value piped into `databricks secrets put-secret` can end in a newline, which no HTTP header takes
+        key = dbutils.secrets.get(secret_scope, API_KEY_SECRET).strip()
+    except Exception as exc:  # noqa: BLE001 - no scope, no key, no permission: go unauthenticated
+        log.warning(
+            "no data.gov.sg key from secret scope %r (%s); running at the lowest rate limit",
+            secret_scope,
+            type(exc).__name__,
+        )
+        return None
+    if not key:
+        log.warning("secret %r in scope %r is empty", API_KEY_SECRET, secret_scope)
+        return None
+    log.info("data.gov.sg API key from secret scope %r", secret_scope)
+    return key
 
 
 def setup(args: argparse.Namespace, *, share: float) -> tuple[Http, Sink]:
@@ -83,7 +109,11 @@ def setup(args: argparse.Namespace, *, share: float) -> tuple[Http, Sink]:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("databricks.sdk").setLevel(logging.WARNING)
-    http = Http(resolve_api_key(args.secret_scope), key_tier=args.key_tier, share=share)
+    http = Http(
+        resolve_api_key(args.secret_scope, args.profile),
+        key_tier=args.key_tier,
+        share=share,
+    )
     sink = make_sink(args.landing, args.sink, args.profile)
     log.info(
         "landing: %s | data.gov.sg rate tier: %s at %.0f%%",

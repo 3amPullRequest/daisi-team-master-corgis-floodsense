@@ -3,11 +3,14 @@ resources:
     etl:
       name: flood-etl
       catalog: ${var.catalog}
-      schema: ${resources.schemas.bronze.name}   # default schema; silver/gold tables name theirs explicitly
+      schema: ${resources.schemas.bronze.name}   # default schema; silver tables name theirs explicitly
       serverless: true
       root_path: ../src/pipeline
-      libraries:
+      libraries:   # gold has its own pipeline (gold.pipeline.yml)
         - glob:
-            include: ../src/pipeline/transformations/**
+            include: ../src/pipeline/transformations/bronze/**
+        - glob:
+            include: ../src/pipeline/transformations/silver/**
       configuration:
         landing_path: /Volumes/${var.catalog}/${resources.schemas.bronze.name}/${resources.volumes.landing.name}
+        silver_schema: ${resources.schemas.silver.name}   # dev deploys prefix it (dev_<you>_silver)

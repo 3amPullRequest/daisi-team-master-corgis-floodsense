@@ -1,0 +1,87 @@
+"""What the silver tables share: their schema, which bronze folders have landed, VARIANT accessors, the floodsense
+parsers as Spark UDFs, and the hand-kept seed files in data/static/."""
+
+import csv
+import os
+from pathlib import Path
+
+from pyspark import cloudpickle
+from pyspark.sql import Column, DataFrame, SparkSession
+from pyspark.sql import functions as F
+
+from daisi_team_master_corgis_floodsense.labels import alert_text, locations
+
+# The UDFs' code travels with them (pickled by value), so the executors don't need src/ on their path.
+cloudpickle.register_pickle_by_value(alert_text)
+cloudpickle.register_pickle_by_value(locations)
+
+SEEDS = Path(__file__).resolve().parents[3] / "data" / "static"
+# A bounding box around Singapore, its islands included, for coordinate checks.
+SG_BOUNDS = "BETWEEN 1.15 AND 1.48", "BETWEEN 103.59 AND 104.10"
+TELEGRAM_LINK = "https://t.me/pubfloodalerts/"
+
+
+def schema(spark: SparkSession) -> str:
+    return spark.conf.get("silver_schema")
+
+
+def landed(spark: SparkSession, *names: str) -> list[str]:
+    """The bronze tables, among `names`, whose landing folders exist; bronze defines only those."""
+    root = spark.conf.get("landing_path")
+    return [name for name in names if os.path.isdir(f"{root}/{name}")]
+
+
+def get(path: str, type_: str, column: str = "payload") -> Column:
+    """A typed field of a VARIANT column, or NULL when it's missing or of another type."""
+    return F.expr(f"try_variant_get({column}, '$.{path}', '{type_}')")
+
+
+def get_ts(path: str, column: str = "payload") -> Column:
+    """An ISO timestamp string (with its offset) of a VARIANT column, as a TIMESTAMP."""
+    return F.expr(
+        f"try_cast(try_variant_get({column}, '$.{path}', 'string') AS TIMESTAMP)"
+    )
+
+
+def in_singapore(lat: str = "lat", lon: str = "lon") -> str:
+    return f"{lat} {SG_BOUNDS[0]} AND {lon} {SG_BOUNDS[1]}"
+
+
+def distance_km(lat1: Column, lon1: Column, lat2: Column, lon2: Column) -> Column:
+    """Haversine, as locations.haversine_km."""
+    p1, p2 = F.radians(lat1), F.radians(lat2)
+    h = F.pow(F.sin((p2 - p1) / 2), 2) + F.cos(p1) * F.cos(p2) * F.pow(
+        F.sin(F.radians(lon2 - lon1) / 2), 2
+    )
+    return F.lit(2 * 6371.0088) * F.asin(F.sqrt(h))
+
+
+# --- the floodsense parsers, as UDFs ----------------------------------------------------------------------------------
+# Only functions of the modules registered above: a function defined here would be pickled by reference, and the
+# executors can't import this package. Filter out NULL inputs first where a function doesn't take them.
+
+parse_alert = F.udf(alert_text.parse_row, alert_text.ROW_SCHEMA)
+location_key = F.udf(locations.location_key, "string")
+name_match = F.udf(locations.name_match, "double")
+svy21_to_wgs84 = F.udf(locations.svy21_to_wgs84, "struct<lat: double, lon: double>")
+
+
+# --- seeds -----------------------------------------------------------------------------------------------------------
+
+
+def seed(spark: SparkSession, name: str, columns: dict[str, str]) -> DataFrame:
+    """A CSV kept by hand in data/static/<name>.csv (a header row; lines starting with # are notes), with `columns`
+    ({name: Spark type}) cast from its text; empty when the file is missing."""
+    path = SEEDS / f"{name}.csv"
+    rows = []
+    if path.exists():
+        with path.open(encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(line for line in f if not line.startswith("#"))
+            rows = [
+                tuple((row.get(c) or "").strip() or None for c in columns)
+                for row in reader
+            ]
+    text = spark.createDataFrame(rows, ", ".join(f"{c} STRING" for c in columns))
+    return text.select(
+        *(F.expr(f"try_cast({c} AS {t})").alias(c) for c, t in columns.items())
+    )

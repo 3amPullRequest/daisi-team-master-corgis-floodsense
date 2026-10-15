@@ -74,6 +74,8 @@ def fit(
     thresholds: tuple[float, ...] = THRESHOLDS_MM,
     max_false_alarms: float = 1.0,
     min_high_precision: float = TARGETS["high_precision"],
+    missing=None,
+    blind=None,
 ) -> tuple[RainfallRule, pd.DataFrame]:
     """Choose the rule on the training window [start, end).
 
@@ -83,7 +85,9 @@ def fit(
     of the time. If no threshold gets there, the rule never says High.
 
     `features` (gold.area_features) can leave out ticks without rain, since they are Low under every threshold.
-    Returns the rule and every Medium candidate's training scores.
+    `missing` lists the ticks whose labels are incomplete (gold.label_ticks) and `blind` those whose features are
+    (gold.feature_ticks); scoreboard.score leaves out what they can't judge. Returns the rule and every Medium
+    candidate's training scores.
     """
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     features = features[(features["ts"] >= start) & (features["ts"] < end)]
@@ -91,7 +95,15 @@ def fit(
 
     def scores(rule: RainfallRule) -> dict[str, float]:
         preds = features[["area", "ts"]].assign(tier=rule.tiers(features))
-        board = score(preds, alerts, start=start, end=end, n_areas=n_areas)
+        board = score(
+            preds,
+            alerts,
+            start=start,
+            end=end,
+            n_areas=n_areas,
+            missing=missing,
+            blind=blind,
+        )
         return board.metrics(ci=False)
 
     rows = []

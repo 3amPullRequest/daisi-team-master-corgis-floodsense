@@ -1,0 +1,16 @@
+# Gold: the area x 5-minute feature table and the labels, from silver. Its own pipeline, so the 5-minute flood-etl
+# updates don't rebuild years of features; flood-daily refreshes it, and training refreshes it before reading.
+resources:
+  pipelines:
+    gold_pipeline:
+      name: flood-gold
+      catalog: ${var.catalog}
+      schema: ${resources.schemas.gold.name}
+      serverless: true
+      root_path: ../src/pipeline
+      libraries:
+        - glob:
+            include: ../src/pipeline/transformations/gold/**
+      configuration:
+        bronze_schema: ${resources.schemas.bronze.name}   # dev deploys prefix them (dev_<you>_bronze)
+        silver_schema: ${resources.schemas.silver.name}

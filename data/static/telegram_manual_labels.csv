@@ -1,0 +1,10 @@
+# Telegram posts labelled by hand, after review in silver.telegram_review. A label here wins over the patterns
+# (labels/alert_text.py) in silver.telegram_posts, with method 'manual'. category is one of alert_text.CATEGORIES.
+# Label only posts that aren't alerts; if a post is an alert in a new format, add the format to FORMATS instead.
+message_id,category,note
+4,not_relevant,"Channel introduction: subscribe for alerts (reviewed 2026-10-14)"
+54,not_relevant,"Flood-readiness tips (reviewed 2026-10-14)"
+1073,not_relevant,"Monsoon surge advisory for 10-13 Jan 2025, no location (reviewed 2026-10-14)"
+1264,not_relevant,"ScamShield advisory (reviewed 2026-10-14)"
+1269,not_relevant,"Announcement: flash flood alerts on vehicle OBUs from 30 Jun 2025 (reviewed 2026-10-14)"
+1332,not_relevant,"ScamShield advisory (reviewed 2026-10-14)"
