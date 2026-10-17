@@ -1,4 +1,18 @@
-"""Auto Loader readers behind the bronze tables: files stream in as they land, unchanged."""
+"""Auto Loader readers behind the bronze tables: files stream in as they land, unchanged.
+
+There are two readers, one per landing format, and a thin wrapper for each that declares the bronze table.
+
+- `json_lines` reads every `*.jsonl*` file (gzipped or not) as text and parses each line into a VARIANT `payload` with
+  `try_parse_json`, so a malformed line becomes a NULL payload that the `payload_parsed` expectation counts, instead of
+  failing the stream. It lifts the line's `fetched_at` into a column, and adds the file's path and modification time
+  and the ingestion time.
+- `csv_files` reads every `*.csv*` file with an explicit all-text schema, matching columns by header, and keeps
+  unexpected columns in `_rescued_data`. It adds the same three file columns.
+
+Both turn off Auto Loader's partition columns. The landing folders have `date=`, `year=` and `version=` levels, and
+leaving them in `source_file` (instead of making them columns) lets silver read them from the path where it needs them.
+`json_table` and `csv_table` register a streaming table around a reader with `@dp.table`.
+"""
 
 from pyspark import pipelines as dp
 from pyspark.sql import DataFrame, SparkSession

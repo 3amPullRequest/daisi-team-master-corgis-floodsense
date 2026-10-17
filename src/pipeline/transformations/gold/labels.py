@@ -10,6 +10,19 @@
   or if an alert for it isn't placed in an area yet; and its split.
 - gold.area_labels: per area and tick, whether a PUB alert came within the hour ('alert'), none came and the window was
   recorded ('no_alert'), or none was recorded but the window wasn't ('missing'), as scoreboard.tick_labels counts them.
+
+How they are built. `label_coverage` orders the recovered posts by id and looks at each pair of neighbours: ids n and
+n+1 prove that nothing was posted between them, so that span of time is recorded, and any id gap makes it missing. A
+last interval runs from the newest post to the last moment the channel's newest page was read, taken from the archive
+scrapes and from the successful live ticks in bronze.ingest_heartbeat. `label_ticks` lays the 5-minute grid from
+LABELS_START to the last midnight whose windows the channel was watched past, and marks a tick missing for two reasons.
+A missing interval hides the tick if a post inside it could carry the tick's alert, which is any post from STAMP_AHEAD
+before the tick to HORIZON + POST_DELAY_MAX after it. And an alert that no method placed in an area (silver.
+alerts_unplaced) hides the ticks whose hour it falls in, since it could belong to any area. Each tick also gets its
+split from the contract's dates: train, a day of embargo, test, and after_split for ticks the models never see.
+`area_labels` crosses the ticks with the 47 areas and joins the area's alerts: an alert at time a labels every tick t
+with t < a <= t + HORIZON. `alert_label` is 1 if one does, else 0 where the window is recorded, else null, and
+`flood_label` is the same for flash floods alone, the label for High.
 """
 
 from pyspark import pipelines as dp

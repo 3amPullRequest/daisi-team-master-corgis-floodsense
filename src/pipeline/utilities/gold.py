@@ -2,6 +2,14 @@
 
 Times are worked in epoch seconds, so no result depends on the session time zone. SGT has kept UTC+8 since 1982, so
 an SGT midnight is the UTC one minus 8 hours, and the tick grid is the same in both.
+
+Gold is built on a grid of 5-minute ticks, and most of its logic is deciding which ticks a thing counts at. The helpers
+make that arithmetic exact. `tick_at_or_after`, `tick_after` and `tick_before` round an instant to the grid (the first
+tick at or after it, strictly after it, strictly before it), and `ticks_between` expands a range of ticks, both ends
+included, into one row per tick. A gold table says, for example, "this reading counts at the ticks from here to there",
+rounds both ends, and explodes the range, which turns a time-window join into a plain group-by. `sgt_midnight_s` and
+`sgt_day_floor` do the same for SGT days. `bronze` and `silver` give the qualified name of a table in the schemas set in
+the pipeline's configuration.
 """
 
 from datetime import date

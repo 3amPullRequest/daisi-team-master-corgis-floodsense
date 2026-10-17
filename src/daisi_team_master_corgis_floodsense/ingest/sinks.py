@@ -1,5 +1,22 @@
 """Where landed files go: a folder (the /Volumes mount on Databricks, or a local dir), or the UC volume through the
-Files API when running outside Databricks."""
+Files API when running outside Databricks.
+
+Fetchers never handle paths or the Databricks SDK themselves. They hold a `Sink` and call five methods on it,
+`write_bytes`, `write_stream`, `exists`, `read_bytes` and `list_names`, all relative to the landing root. Two classes
+provide them:
+
+- LocalSink writes under a directory: a local folder, or /Volumes/... on Databricks, where the volume is mounted. A
+  file is written to a hidden temporary name and then renamed into place, so a reader never sees a partial file (Auto
+  Loader skips dot-files).
+- FilesApiSink uploads to the UC volume with the Files API, for runs outside Databricks. A large download is staged on
+  local disk first (not /tmp, which is often RAM-backed) and uploaded from there.
+
+`make_sink` chooses: "auto" uses the Files API only for a /Volumes path that isn't mounted on this machine.
+
+The sink is also where the fetchers keep their memory, because the volume outlives every run. "Does this file exist"
+is how a backfill knows a day, a yearly CSV or a web-archive capture is done and skips it; `read_json` and
+`write_json` keep the small cursors (newest Telegram id, newest radar frame, last repair day) under `_state/`.
+"""
 
 from __future__ import annotations
 

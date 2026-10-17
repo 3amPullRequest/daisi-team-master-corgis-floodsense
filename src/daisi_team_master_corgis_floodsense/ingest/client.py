@@ -1,4 +1,27 @@
-"""HTTP access for every ingestion source: retries, User-Agent, and data.gov.sg rate limits."""
+"""HTTP access for every ingestion source: retries, User-Agent, and data.gov.sg rate limits.
+
+Every fetcher goes through one `Http` object, which does three jobs so the fetchers don't have to:
+
+- Rate limits. A call made with `bucket=` ("realtime" for the v2 real-time API, "download" for dataset files) is a
+  data.gov.sg call: it is throttled by a sliding-window RateLimiter and carries the API key. Calls to any other host
+  (S3, t.me, NEA, UHSLC, OneMap, the web archive) are neither throttled here nor shown the key. RATE_LIMITS holds the
+  calls allowed per 10 seconds by key tier (none, dev, prod), and each limiter is sized to a `share` of that allowance
+  (a live tick takes 80%, a backfill 60%), which leaves room for another client on the same key. The budget is one
+  per client across all data.gov.sg hosts, so metadata calls alone can make the real-time API answer 429.
+- Retries. A dropped connection, a timeout, a 5xx or a 429 is retried after a jittered wait: the server's own
+  Retry-After where it sends one, 10 seconds for a 429 (what data.gov.sg asks for), else capped exponential backoff.
+  Any 2xx is success, and a caller can name further statuses to be handed back (`accept`). After `max_attempts` the
+  failure is raised, as HttpError for an HTTP status. A 429 under a key is logged once, since it usually means
+  data.gov.sg didn't recognise the key and treated the client as having none.
+- Identity. Every request names itself in the User-Agent, because data.gov.sg answers the default Python agent with 403.
+
+The data.gov.sg endpoints sit on top: `realtime` (one page), `iter_day_pages` (every page of one SGT day, newest
+first, following the paginationToken until a page that isn't 200), `collection_years` and `dataset_metadata` (which
+dataset holds each year of a "Historical ..." collection), and `dataset_file_url` (the download handshake: initiate it
+for a CSV, then poll until a presigned S3 URL is ready). A date with no data comes back as a 404 carrying body code
+17; `get_api_json` returns that as an ordinary response (`ApiResponse.no_data`) so a backfill can land it as the
+day's "nothing here" marker instead of failing.
+"""
 
 from __future__ import annotations
 

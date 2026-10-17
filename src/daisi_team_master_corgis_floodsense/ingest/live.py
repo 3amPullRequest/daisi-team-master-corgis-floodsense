@@ -1,5 +1,29 @@
 """One live tick: the newest page of every API source, new Telegram posts, new radar frames, and (once a day) NEA's
-tide table, then a heartbeat line summarising the tick. `main` can repeat ticks on an interval."""
+tide table, then a heartbeat line summarising the tick. `main` can repeat ticks on an interval.
+
+A tick is what the flood-live job runs every 5 minutes, or what --every repeats on a laptop where the APIs are
+reachable. It reads nothing back and interprets nothing: it lands what each source says right now, as new files, and
+leaves the rest to bronze and silver.
+
+- API sources. `newest_page` asks for page 1 of today's readings (the newest 25 records) rather than for "the latest",
+  so a tick that ran late or was skipped is repaired by the next one; just after midnight SGT, when today may still be
+  empty, it falls back to the plain latest reading. Ticks overlap on purpose, and silver removes the repeats. Radar
+  also saves the PNG frames newer than the cursor in `_state/radar_70km.json`.
+- Telegram. The newest page of the channel, of which only posts above the cursor in `_state/telegram.json` are landed,
+  so posts PUB later deletes are kept. A gap longer than one page is not caught up here; re-running the archive
+  backfill does that.
+- Tides. NEA's tide table, at most once per SGT day (cursor `_state/nea_tides.json`).
+- One source failing doesn't stop the rest. Each runs under `_guard`, which records the error instead of raising. The
+  tick ends with a heartbeat line, one result per source (ok, HTTP status, record count, path, latency), landed in
+  `ingest_heartbeat`. That is the pipeline's only evidence that a source was up: gold.label_coverage reads it to learn
+  how far the Telegram channel was being watched.
+- Daily repair. With --daily-repair, the first tick after 00:30 SGT re-pulls yesterday in full through
+  history.api_days, filling what the live pages missed; a cursor limits it to once a day, and a failure is logged and
+  retried after the next tick.
+- --trigger-job runs a Databricks job after each tick, for a laptop that feeds the pipeline.
+
+The exit status is non-zero when any source failed, so a Databricks task shows red.
+"""
 
 from __future__ import annotations
 
@@ -198,7 +222,7 @@ def daily_repair(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     add_common_args(parser)
     parser.add_argument(
         "--sources",

@@ -5,6 +5,14 @@ and name the tier whose limit that is (client.RATE_LIMITS: 6 without a key, 12 d
     uv run python src/ingestion/check_key.py --profile flood_dev
 
 Run it while nothing else uses the key or this connection: data.gov.sg counts every call against one budget.
+
+How it measures: `realtime_limit` first makes calls until one is answered 429, so it knows the current window is
+spent. It then polls until a call succeeds again (the window has reset, or it gives up after two windows), and counts
+the calls that succeed from there until the next 429. That count is the allowance of a fresh window, so it can't
+straddle two windows and read low. `tier_for` maps the count to the lowest tier whose limit is at or above it, and a
+count that never hit a limit within MAX_CALLS (twice the prod limit) reads as prod. The check uses a plain requests
+session rather than `client.Http`, whose throttling and retries would hide the very limit it is measuring. It exits
+non-zero if there is no key, or if the limit is the no-key one, which means data.gov.sg doesn't recognise the key.
 """
 
 from __future__ import annotations

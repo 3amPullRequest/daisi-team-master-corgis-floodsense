@@ -2,6 +2,19 @@
 
 The parsers only lift structure out of the markup (post id, timestamp, text; table cells). Interpreting the text
 (alert type, location, issue time) is silver's job, so the raw post HTML is kept alongside.
+
+Telegram. t.me/s/<channel> is the channel's public preview: about 20 posts, each a `tgme_widget_message` div whose
+`data-post` is `<channel>/<id>`. `_TelegramPageParser` is a streaming HTMLParser that works as a small state machine.
+A post div opens a record (id, channel, whether it is a service message); inside it the parser picks up the
+`<time datetime>` as posted_at, the view count, an "edited" marker, the channel's title, and the post text, taken both
+as plain text (`<br>` as a newline) and as the exact slice of the source HTML, so a later reader can see precisely what
+Telegram sent. It also notes whether the page links to newer posts: a channel page with no such link ends at the
+channel's newest post, which wayback.py uses to learn how far the channel had got when it was captured. An embedded
+post (`?embed=1`) parses by the same rules.
+
+NEA tides. The page has one table per month, with a day cell spanning that day's 3-4 high and low waters. `_TableParser`
+lifts each table into rows of cell text, and `parse_nea_tides` walks them tracking the current month and day, and
+pairs each table with the month label from the page's tabs, which come in the same order. Values stay as printed.
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ Round 2 is a mentored build sprint from 12 to 26 Oct 2026. Demo Day is on 27 Oct
 - a three-year trend of flood-prone areas;
 - both batch data (training) and streaming data (inference).
 
-Tags follow the Round 1 plan: **W1** is due Sun 18 Oct, **W2** is due Sun 25 Oct, and **Stretch** waits until both are done. Ticked boxes were checked against the repo and the dev deploy on 13 Oct, the silver ones on 14 Oct (`uv run pytest`: 115 passed), and the gold and ML ones on 15 Oct (160 passed). An unticked box is either not done or still needs checking in the workspace.
+Tags follow the Round 1 plan: **W1** is due Sun 18 Oct, **W2** is due Sun 25 Oct, and **Stretch** waits until both are done. Ticked boxes were checked against the repo and the dev deploy on 13 Oct, the silver ones on 14 Oct (`uv run pytest`: 115 passed), and the gold and ML ones on 15 Oct (160 passed), as were the silver tables for the other data.gov.sg sources (164 passed). An unticked box is either not done or still needs checking in the workspace.
 
 ### Data Ingestion
 
@@ -63,23 +63,23 @@ The bronze fetchers are written, tested and deployed to dev (see [Ingestion (bro
 - [ ] Weather time series: rainfall, 2-hour forecast, wind direction and speed, lightning, air temperature, relative humidity, radar
     - [x] Fetchers: live ticks and day backfill for all nine API sources, and yearly CSVs for the six that have them.
     - [ ] Restart the laptop `api-days` backfill with an API key **W1**:
-        - [ ] Register a data.gov.sg key and store it in the `floodsense` secret scope (see [One-time setup](#one-time-setup)). On 15 Oct the scope held a `datagovsg-api-key` stored on 12 Oct that data.gov.sg doesn't recognise: `check_key.py` measured 6 calls per 10 s, the no-key limit. Store the new key, then check it.
+        - [x] Register a data.gov.sg key and store it in the `floodsense` secret scope (see [One-time setup](#one-time-setup)). A prod key since 15 Oct: the laptop run reads it from the scope, and in 9 hours at 60% of the prod limit it met no HTTP 429 (a key data.gov.sg doesn't recognise gets the no-key limit, 6 calls per 10 s).
         - [x] Laptop runs read the key from the secret scope too (through `--profile`), and `check_key.py` measures which tier a key really gets.
-        - [ ] The 10 Oct run had no key (`rate tier: none`) and stopped at 22:59 on `pub_flood_alerts` 2026-01-10. On 15 Oct a laptop run restarted rainfall and the forecast only (`--sources nea_rainfall nea_two_hr_forecast`, no key), from 2025-01-01, at about 40 s per day of rainfall. It was stopped after 2025-06-30, to resume with a key (log: `~/floodsense-api-days.log`). Until they do and `flood-etl` streams them, gold has no rain from 2025 on: none in the test split, and none in the last year of training. `pub_flood_alerts` from 2026-01-11 is still to do.
+        - [ ] Since 11:56 on 15 Oct the laptop run has a prod key (`--key-tier prod`, log `~/floodsense-api-days.log`). By 21:10 it had landed every day through 14 Oct 2026 of the labels (`pub_flood_alerts`, 409 days from 2025-09-01), rainfall and the forecast (652 days each from 2025-01-01), checked on the volume. The 1-minute sources take about 33 s a day, so about 6 hours each: wind direction (at 30 May 2025 by then), wind speed, lightning, air temperature, humidity, then radar. The run executes from the project `.venv`: rebuilding it underneath killed an earlier run on 15 Oct (`certifi` lost its path), so while it runs, test with `.venv/bin/python -m pytest` and leave `uv sync` for later.
         - [ ] It resumes where it stopped. With a dev key, labels, rainfall and the forecast land in about 8 hours, and everything in about 3 days.
-    - [ ] Run the `hist_csv` task of `flood-backfill` (2021–2024). Re-run it when data.gov.sg publishes 2025. **W1**
+    - [x] Run the `hist_csv` task of `flood-backfill` (2021–2024): all six sources landed on 10 Oct, four years each (checked 15 Oct). Re-run it when data.gov.sg publishes 2025. **W1**
     - [ ] Check coverage per source and day with the progress query in [Checking it](#checking-it). Rainfall must cover every day from the training start, 2021-10-27 (the CSVs cover 2021–2024; the API backfill the rest). **W1**
     - [ ] Unpause `flood-daily`, so each night repairs gaps in the live feed. **W1**
-    - [ ] Radar starts on 2026-07-01, so a model trained on 2025 can't use it: archive it only for now (**Stretch**). Lightning starts on 2025-02-01, so it covers training.
+    - [ ] Radar starts on 2026-07-01, so a model trained on 2025 can't use it: archive it only for now (**Stretch**). Lightning starts on 2025-02-01, so it covers the last 10½ months of training (Feb–Dec 2025) and all of the test; it reaches silver as `silver.lightning_strikes`.
 - [ ] Tides
     - [x] NEA tide table, scraped daily (this month and next); UHSLC Tanjong Pagar hourly, 1984–2023.
     - [ ] Run the `uhslc` task, then check its row count and the `-32767` gaps. **W1**
 - [ ] Static layers
     - [x] `fetch_static.py`: URA MP2019 and MP2025 land use, PUB water-level sensors, flood-prone area (ha), SLA vertical-control benchmarks.
-    - [ ] Run the `static` task, and confirm each `static_*` table holds one `version`. **W1**
+    - [x] Run the `static` task, and confirm each `static_*` table holds one `version`: landed on 10 Oct, one version each (checked 15 Oct). **W1**
     - [ ] PUB list of flood-prone areas (Apr 2025 PDF, 36 names): transcribe it to a CSV seed in `data/static/`. Silver geocodes it. **W1**
     - [ ] NEA's 47 forecast areas and their label points come with the 2-hour forecast (`area_metadata`), so silver builds them; there's nothing extra to ingest.
-    - [ ] Elevation: choose the SLA benchmarks (points, already landed) or the Copernicus GLO-30 DEM (30 m raster; registration and an attribution notice required). GLO-30 is a one-off download from a laptop into a UC volume. **W2**
+    - [ ] Elevation: the Copernicus GLO-30 DEM (30 m raster; registration and an attribution notice required), a one-off download from a laptop into a UC volume. The SLA benchmarks are out: none of the 314 points carries a height, only its number, status and update time, and every z is 0 (checked 15 Oct). **W2**
     - [ ] PUB drainage catchment maps: PDF only, so the 11 catchments have to be digitised by hand. Only upstream-catchment rainfall needs them. **Stretch**
 - [ ] **Stretch:** LTA DataMall, for B2's ridership-disruption stretch goal. It needs an account key; first check what it offers at the time resolution of a storm.
 
@@ -87,13 +87,13 @@ The bronze fetchers are written, tested and deployed to dev (see [Ingestion (bro
 
 Silver goes in the `flood-etl` pipeline and gold in `flood-gold`, under `src/pipeline/transformations/{silver,gold}/`. Build them backwards from `ml/contract.py`. All timestamps are SGT.
 
-Silver is built (14 Oct) up to the labels and the two core feature sources; see [Silver](#silver). What's left there is the area polygons, the weather and tide tables, and the area context.
+Silver is built (14 Oct) up to the labels and the two core feature sources, and since 15 Oct holds every other data.gov.sg source too: the weather readings and stations, lightning, land use and the flood-prone area; see [Silver](#silver). What's left there is the area polygons and the tides. The area context moves to gold, which maps feature sources to areas (as `gold.area_rain_stations` does for the gauges).
 
 - [ ] Silver: reference tables **W1**
     - [x] `silver.forecast_areas`: the 47 areas and their label points, from `area_metadata` and the yearly CSVs. 47 rows.
     - [ ] Polygons for the app's map: Voronoi cells around the label points, clipped to the coastline (the union of the Master Plan land-use polygons works as one). Alerts don't need them: the nearest label point is the Voronoi cell.
     - [x] `silver.rain_stations`: the rain gauges, with location and first and last day seen: 104 ids (89 in the API's list on 10 Oct, 80 in the 2021–2024 CSVs). None has moved; some were renamed.
-    - [ ] Weather stations, with `silver.weather_5min`. **W2**
+    - [x] `silver.weather_stations`: the automatic weather stations, with location, the variables each reports, and the first and last day seen. 22 on 15 Oct: the 19 of the 2021–2024 CSVs, plus S23 Tengah, S80 Sembawang and S199 from the API. **W2**
 - [ ] Silver: readings
     - [x] `silver.rainfall_5min` (station, ts, mm), from live, backfill and yearly CSVs **W1**:
         - [x] explode `payload:body.data.readings` and cast;
@@ -101,8 +101,14 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
         - [x] deduplicate on (station, ts), keeping the latest `fetched_at` (Auto CDC, so each update merges only new pages);
         - [x] expectations: a parsed reading, 0 ≤ mm ≤ 60 (the 2021–2024 maximum is 37.2 mm). All 27,329,166 readings passed.
         - [x] `published_at`: when NEA published each reading, from the CSVs. Gold needs it (see the reading-lag item below).
-    - [ ] `silver.weather_5min`: air temperature, humidity, wind speed and wind direction, from 1-minute readings to 5-minute means. Average the wind as u/v components. **W2**
+    - [x] `silver.weather_1min` (station, variable, ts, value): air temperature, humidity, wind speed and wind direction at NEA's 1-minute resolution, from the yearly CSVs, the API day backfill and live ticks (15 Oct). **W2**
+        - [x] Not the 5-minute means first planned. The same reading lands many times, so it has to be deduplicated (Auto CDC) before anything is averaged; and an average of floats keeps a materialized view from refreshing incrementally, so a 5-minute view would rescan 112 million readings on every update. NEA's wind readings are already 10-minute means. The 5-minute values, and the wind as u/v, belong in gold, like the rain windows.
+        - [x] Deduplicated on (station, variable, ts); within a CSV the later publication wins (88 revised readings: 42 temperatures, 46 humidities).
+        - [x] Expectations: a parsed reading, and a value inside wide physical bounds (`utilities/silver_sources.py`; a test checks that the 2021–2024 extremes fall inside). All 112,345,530 readings passed (15 Oct).
+        - [ ] The 2025–26 API days arrive with the laptop backfill (wind direction through May 2025 on 15 Oct); each `flood-etl` update merges what has landed.
+    - [x] `silver.lightning_strikes`: one row per strike (time to the millisecond, place, `C` cloud to cloud or `G` cloud to ground), from the API; NEA's lightning starts on 1 Feb 2025. Deduplicated on (ts, lat, lon, type), since a record lists some strikes twice. Empty until the backfill reaches lightning (15 Oct). **W2**
     - [x] `silver.forecasts_2h` (area, issued at, published at, valid window, category), with NEA's code and an ordinal `rain_class` (0–5) for the categories. Joins use only forecasts with `updated_at` before the tick. 4,140,371 rows, every category known.
+        - [ ] Forecasts NEA issued from 1 Jan to about 7 May 2025 all carry 8 May 2025 (03:51–04:35 UTC) as `update_timestamp`: NEA re-published them in bulk, 100–160 days after issue (2021–2024: 3–9 minutes). Gold uses a forecast only from its `updated_at`, so those four months, the wettest March on record included, are blind for want of forecasts. That, not the backfill, is why most of Jan–Jun 2025 was blind on 15 Oct. Proposed: where `updated_at` is hours after `issued_at`, take the publication time as `issued_at` plus NEA's usual lag (10 minutes covers 99% of 2021–2024), flagged as imputed. Decide before the refit. **W2**
     - [ ] `silver.tides` **W2**:
         - [ ] Fit utide once on UHSLC and keep the constituents.
         - [ ] Predict 5-minute heights from 2025 through 2027.
@@ -125,10 +131,12 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
         - [x] Expectations: area not null (otherwise `silver.alerts_unplaced`), and kind is `warning` or `flash_flood`.
         - [x] Subsided and heavy-rain posts stay out.
     - [ ] Geocode the 36 flood-prone names with the same gazetteer (after transcribing them, see Static layers).
-- [ ] Silver: area context **W2**
-    - [ ] `silver.area_static`, one row per area:
-        - [ ] land-use shares (MP2019 before 1 Dec 2025, MP2025 after);
-        - [ ] elevation summary (min, mean, share of low-lying cells);
+- [ ] Area context **W2**
+    - [x] `silver.land_use`: both Master Plans, one row per polygon (226,606), with URA's land use, its area, the polygon as GeoJSON, and the days each plan is in force (15 Oct).
+    - [x] `silver.flood_prone_area`: PUB's flood-prone hectares by year, 2022–2025 (15 Oct).
+    - [ ] `gold.area_static` (planned as silver, but it maps feature sources to areas, which is gold's job), one row per area and plan:
+        - [ ] land-use shares (MP2019 before 1 Dec 2025, MP2025 after): `h3_polyfillash3` on `silver.land_use.geometry` at resolution 11 (about 0.002 km² a cell), each cell to the area of the nearest label point, then shares of cells. On serverless on 15 Oct a 0.01° square filled to 506 cells;
+        - [ ] elevation summary (min, mean, share of low-lying cells), from GLO-30 once it lands;
         - [ ] number of water-level sensors;
         - [ ] number of flood-prone locations.
 - [ ] Gold (`flood-gold`, built 15 Oct; see [Gold](#gold))
@@ -141,21 +149,24 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
     - [x] Labels: `gold.label_coverage` (id gaps as intervals), `gold.label_ticks` (per tick: recorded or missing, why, and the split) and `gold.area_labels` (per area and tick: `alert`, `no_alert` or `missing`, and 1/0/null labels for alerts and floods). **W1**
     - [x] The 80/20 temporal split on recorded label time: train 27 Oct 2021 – 18 Dec 2025, a day's embargo, test 20 Dec 2025 – 12 Oct 2026 (`contract.TEST_START`, computed by `split.temporal_split`). **W1**
     - [x] `gold.model_rows`: the only rows models learn from or are tested on, where both the label window and the feature window are recorded. Expectations fail the update if a missing interval gets in. **W1**
-        - [ ] Columns for the gated model **W2**:
+        - [ ] Columns for the gated model **W2** (16 Oct: the optional features, see [Gold](#rain-around-the-area-weather-and-lightning)):
             - [ ] antecedent rain (3 h, 24 h) and rain trend;
-            - [ ] upwind rain, using the wind vector;
+            - [x] rain 5–20 km away (`rain_nearby_30min_mm`), and the same upwind of the island-wide wind (`rain_upwind_30min_mm`). Of the 661 dry training rows an alert followed (no rain within 5 km in the hour), 76% had rain 5–20 km away, against 15% of quiet dry rows. Upwind is undefined when the mean wind is under 2 knots, which in Nov–Dec 2024 was 42% of the hour before alerts (storm winds point every way), so expect little from it;
             - [x] forecast category and its age (15 Oct);
             - [ ] tide height and minutes to the next high tide;
-            - [ ] temperature and humidity;
-            - [ ] the `silver.area_static` columns.
+            - [x] temperature, humidity and wind, island-wide (`air_temp_c`, `rel_humidity_pct`, `wind_u_kn`, `wind_v_kn`; 19 stations can't give 47 areas their own). Known for 98–99% of 2021–2024; 2025–26 fills in as the weather backfill lands;
+            - [x] lightning within 10 and 30 km in the last 30 minutes (`lightning_10km_30min`, `lightning_30km_30min`), from Feb 2025; empty until the lightning backfill lands. On 13 Apr 2025 Sembawang had 500 strikes within 10 km at 13:10 with 0.2 mm of rain; PUB's flood alert came at 13:50. In gold, but held back from the models (`contract.HELD_BACK_FEATURES`, 16 Oct): to feed it to them, drop it from there and give it its monotone constraint and reason in `gated.py`;
+            - [x] the area context as `gold.area_land_use` (land-use shares per area and plan, by H3 cells). Not a model input: a share is the same at every tick of an area, and the models already read the area;
             - [ ] Per-area history, such as the past alert rate, is computed on the training window only.
         - [ ] Live/backfill parity: rebuild a live day from backfill files and compare. Replay is only honest if the two match. **W2**
     - [ ] `gold.flood_prone_trend` (year and hectares: 27 ha in 2022 down to 23.3 ha in 2025) and `gold.flood_prone_locations` (the 36 geocoded names). **W1**
+        - [x] `gold.flood_prone_trend`: year, hectares, and the change from the year before (16 Oct).
+        - [ ] `gold.flood_prone_locations`, once the 36 names are transcribed.
     - [ ] `gold.pub_lead_times`: minutes from PUB's first alert to each flash flood in the archive, to re-measure the 13.3-minute figure as Round 1 promised. `scoreboard.alert_events` already finds the first alert and first flood per event. **W1**
 - [ ] Pipeline health
-    - [ ] A `flood-etl` update has to finish well inside the 5-minute tick. Time it after adding each table, and move heavy rebuilds to `flood-daily` if it doesn't fit. **W1** The first silver build, including the one-off load of 27 million CSV readings, took 4.5 minutes on 14 Oct. A later update with no new readings took about 5 minutes: 2 waiting for and starting serverless compute, and 2.5 running, mostly the label tables (the gazetteer's sensor matching about 30 s, each Python-UDF table a few seconds to start its workers). That leaves no room in a 5-minute tick; options are a separate labels pipeline that `flood-live` refreshes only when new posts land, or a 10-minute cadence. Decide once gold is in.
+    - [ ] A `flood-etl` update has to finish well inside the 5-minute tick. Time it after adding each table, and move heavy rebuilds to `flood-daily` if it doesn't fit. **W1** The first silver build, including the one-off load of 27 million CSV readings, took 4.5 minutes on 14 Oct. A later update with no new readings took about 5 minutes: 2 waiting for and starting serverless compute, and 2.5 running, mostly the label tables (the gazetteer's sensor matching about 30 s, each Python-UDF table a few seconds to start its workers). That leaves no room in a 5-minute tick; options are a separate labels pipeline that `flood-live` refreshes only when new posts land, or a 10-minute cadence. Decide once gold is in. On 15 Oct the update that first built the weather tables (110 million CSV readings) and streamed the whole 2025–26 rain and forecast backfill ran 10.5 minutes (12 with start-up). What the 13 new flows add to a routine update isn't measured yet.
     - [x] Tests: stamp, location and alert parsers against fixtures, plus contract tests that silver's and gold's columns match `contract.py` (`tests/test_silver_contract.py`, `tests/test_gold_contract.py`). **W1**
-    - [x] Gold in its own pipeline, so the 5-minute `flood-etl` updates don't rebuild years of features: the first `flood-gold` build took about 1.5 minutes of running (3.5 with compute start-up). `flood-daily` refreshes it after the repair. Live scoring will need the newest tick's features within the tick: compute them from silver with the same definitions, or refresh `flood-gold` in `flood-live` if its updates stay short.
+    - [x] Gold in its own pipeline, so the 5-minute `flood-etl` updates don't rebuild years of features: the first `flood-gold` build took about 1.5 minutes of running (3.5 with compute start-up). `flood-daily` refreshes it after the repair. With the optional features (16 Oct) a full rebuild runs 3.6 minutes (4.4 with start-up). Live scoring will need the newest tick's features within the tick: compute them from silver with the same definitions, or refresh `flood-gold` in `flood-live` if its updates stay short.
     - [ ] Feed expectation pass rates from the pipeline event log to the dashboard's health page. **W2**
 
 ### Machine Learning
@@ -168,7 +179,7 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
     - [x] Smoke test on gold, 15 Oct, after geocoding (train split where gold had rain: 27 Oct 2021 – 22 May 2025, as far as the backfill had reached). Medium from `rain_15min_mm` ≥ 17.5, never High: 10.8% of 240 judged alert events flagged before PUB (95% CI 7.5–15.4%), 1.8 min mean lead, 0.83 false alarms per area-month. 160 events were unjudged: 114 next to id gaps (PUB deletes posts mostly during storms), the rest next to the 50 unplaced warnings. Not the real fit yet: that waits for the 2025 rain.
 - [x] `split.py`: `temporal_split` (the 80/20 cut on recorded ticks), 5 blocked day-folds in the development period, a 1-day embargo, and the test kept for a single run.
 - [ ] Setup **W1**
-    - [x] `lightgbm` and `scikit-learn` in `pyproject.toml`; the training job adds `lightgbm` to serverless environment 6, which has scikit-learn and `mlflow-skinny`. Still to add for silver: `utide`, `pyproj` and `shapely`.
+    - [x] `lightgbm` and `scikit-learn` in `pyproject.toml`; the training job adds `lightgbm` to serverless environment 6, which has scikit-learn and `mlflow-skinny`. Still to add for the tides: `utide`. The spatial work needs neither `shapely` nor `pyproj`: Databricks' H3 and ST functions run on serverless (`h3_polyfillash3`, `st_geomfromgeojson`; checked 15 Oct through Databricks Connect), and SVY21 is converted in `labels/locations.py`.
     - [x] `resources/train.job.yml` (`flood-train`) and `resources/ml.yml` (the MLflow experiment and the UC registered model), deployed to dev on 15 Oct.
     - [x] Every run logs `split.summary(...)`, and the coverage of each split.
 - [ ] Rule baseline end to end **W1**
@@ -185,7 +196,8 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
     - [x] Tier cut-offs, from the same pooled predictions:
         - [x] Medium: the most PUB events flagged before PUB, within no more false alarms than the rule raises (at most 1 per area-month);
         - [x] High: where at least 1 in 3 High episodes are followed by a flash flood (the same logic as `baseline.fit`). 15 Oct: never, as one flood event could be judged; the 2025 floods arrive with the backfill.
-    - [x] Reasons: LightGBM's `pred_contrib=True`, the two inputs that raised the score most, in plain English ("19 mm of rain within 5 km in the last 15 min; NEA forecasts thundery showers here"). Upwind rain and tides join when those columns exist.
+        - [x] Every cut-off lies above the probability of the rows the gate screens out (16 Oct). Calibration floors the passed rows at that probability, so the lowest candidate could sit on it and warn every row, and the scoreboard can't fault that: one endless warning per area holds every alert, so it is never a false alarm. The new features made the synthetic test's gate sharp enough to pick it.
+    - [x] Reasons: LightGBM's `pred_contrib=True`, the two inputs that raised the score most, in plain English ("19 mm of rain within 5 km in the last 15 min; NEA forecasts thundery showers here"). Since 16 Oct also the rain 5–20 km away or upwind ("14 mm of rain upwind, 5-20 km away in the last 30 min"). Lightning and tides join when the models read them.
     - [x] Before touching 2026, beat the rule on both lead time and false alarms out of fold, as committed in Round 1. 15 Oct: 20.8% of 192 judged alert events flagged before PUB (95% CI 15.7–27.1%) against the rule's 9.4% (6.0–14.3%), 5.1 min mean lead against 0.9, at 0.87 false alarms per area-month against 0.91. Registered as version 2, `@champion`. Refit once the backfill lands: 2025 holds a third of the training time.
 - [ ] Held-out test, run once **W2**
     - [ ] Score 2026 to date: `databricks bundle run train -t dev -p flood_dev --params score_test=true`, once the API backfill has landed rain and forecasts through 12 Oct 2026 and `flood-etl` and `flood-gold` have run. It refuses while under 95% of the test's recorded label time has features (0% on 15 Oct).
@@ -432,6 +444,11 @@ Silver runs in the same `flood-etl` pipeline as bronze (`src/pipeline/transforma
 | `water_level_sensors` | PUB drain sensor, SVY21 → WGS84 | static sensor list, newest version | materialized view |
 | `rainfall_5min` | gauge × 5-minute timestamp: mm, `published_at` (CSVs only) | yearly CSVs 2021–2024, API day backfill, live ticks | Auto CDC: the latest fetch wins, and an update merges only new pages |
 | `forecasts_2h` | area × issue × amendment: category, NEA code, `rain_class` | yearly CSVs, API day backfill, live ticks | Auto CDC |
+| `weather_stations` | weather station: location, name, variables, first and last day | the four weather APIs' `stations`, yearly CSVs | materialized view; the CSV half is private and rescans only when a CSV lands |
+| `weather_1min` | station × variable × minute: value, `published_at` (CSVs only) | yearly CSVs 2021–2024, API day backfill, live ticks | Auto CDC; within a CSV the later publication wins |
+| `lightning_strikes` | strike: time, place, type, `published_at` | lightning API (from 1 Feb 2025) | Auto CDC |
+| `land_use` | Master Plan polygon: land use, area, GeoJSON, days in force | URA MP2019 and MP2025, newest versions | materialized view |
+| `flood_prone_area` | year: PUB's flood-prone hectares | PUB's dataset, newest version | materialized view |
 | `telegram_posts` | post: category, pattern, problem, locations and stamps | `bronze.pub_telegram_posts` (archive, wayback, live) | materialized view |
 | `telegram_review` | post a person should look at, with what to do | `telegram_posts` | materialized view |
 | `api_flood_alerts` | API alert: description read like a post, PUB's circle | `bronze.pub_flood_alerts` | materialized view |
@@ -470,6 +487,14 @@ Run it again after new posts land. It asks each unplaced location only the queri
 
 **Hand-check the flash-flood locations** (about 40; `SELECT * FROM ...silver.location_gazetteer WHERE array_contains(kinds, 'flash_flood')`). OneMap places a road at one point, so a junction on a long road can land in the next area: "Junction of Boon Lay Way and Corporation Rd" is placed on Boon Lay Way's point, in Jurong East, though the junction is nearer Jurong West's. Two spellings of one place can also land in two areas ("KPE (towards ECP) near Buangkok East Drive" in Paya Lebar by its sensor, "... slip road to Buangkok East Drive" in Sengkang by OneMap). Rows with `onemap_query_rank` of 2 or more were placed by one road of several, so check those first. A fix goes in the manual CSV.
 
+### Weather, lightning and land use
+
+- **Weather** (`weather_1min`): NEA's automatic weather stations report air temperature (`air_temp_c`), relative humidity (`rel_humidity_pct`), wind speed (`wind_speed_kn`, in knots) and wind direction (`wind_dir_deg`, where the wind blows from) every minute; both wind variables are NEA's 10-minute means. Readings stay at that resolution, one row per station, variable and minute, so the four variables merge independently: a wide row would need all four in one flow. As with rain, the CSVs give `published_at` and the API doesn't (one 2024 humidity reading was published 19 hours late), and gold decides what a tick may use. The variables, their bronze tables and the bounds silver keeps are in `utilities/silver_sources.py`.
+- **Stations** (`weather_stations`): one place can change id between variables and years. Changi's wind is S199 in the API and its temperature S24, which had all four in the CSVs. NEA's points for a station differ by up to about 0.6 km between lists (S06 Paya Lebar, S117 Banyan Road), so join stations to areas by distance, not by id.
+- **Lightning** (`lightning_strikes`): a record every 2 minutes lists the strikes of the 2 minutes before it, and NEA publishes it about 2 minutes after it closes, so a strike's `published_at` is 2–4 minutes after it. It reaches about 0.95–1.65 N, 103.3–104.4 E: storms over Johor and the Riau islands show before they reach Singapore. In the 50 minutes before the 13 Apr 2025 floods it listed 12,225 strikes, 140 of them cloud to ground.
+- **Land use** (`land_use`): 113,212 polygons in MP2019 and 113,394 in MP2025, 33 land uses, about 790 km² each. `area_m2` is URA's own (`SHAPE.AREA`, measured in SVY21). A tick reads the plan in force on its day (`valid_from <= day < valid_to`). For shares per area, `h3_polyfillash3` takes the GeoJSON as it is.
+- **Not in silver:** SLA's vertical control points carry no heights, and the radar frames are only archived.
+
 ### Checking it
 
 ```sql
@@ -487,6 +512,17 @@ SELECT * FROM flood_dev.dev_<you>_silver.alerts_unplaced ORDER BY alert_ts DESC;
 -- the labels by kind and year
 SELECT kind, year(alert_ts) AS year, count(*) AS alerts, count(DISTINCT to_date(alert_ts)) AS days
 FROM flood_dev.dev_<you>_silver.area_alerts GROUP BY ALL ORDER BY 1, 2;
+
+-- weather readings by variable, source and year, and the stations
+SELECT variable, source, year(ts) AS year, count(*) AS readings, count(DISTINCT station_id) AS stations
+FROM flood_dev.dev_<you>_silver.weather_1min GROUP BY ALL ORDER BY 1, 2, 3;
+SELECT * FROM flood_dev.dev_<you>_silver.weather_stations ORDER BY station_id;
+
+-- lightning strikes per day, and each plan's land use
+SELECT to_date(ts) AS day, count(*) AS strikes, count_if(type = 'G') AS cloud_to_ground
+FROM flood_dev.dev_<you>_silver.lightning_strikes GROUP BY ALL ORDER BY 1 DESC;
+SELECT plan, land_use, count(*) AS polygons, round(sum(area_m2) / 1e6, 2) AS km2
+FROM flood_dev.dev_<you>_silver.land_use GROUP BY ALL ORDER BY 1, 4 DESC;
 
 -- expectation results of the latest update
 SELECT origin.flow_name, e.name, e.passed_records, e.failed_records
@@ -507,6 +543,10 @@ Timestamps are instants (`TIMESTAMP`); set `spark.sql.session.timeZone` to `Asia
 - **OneMap's top hit isn't always the place searched:** "Kings Rd" gives Kings Home on Joo Chiat Road, "Bukit Timah Rd" an expressway gantry. An answer counts only when its road, name or building is named like the query.
 - **The API's text isn't the post's:** the same flood is "Boon Lay Avenue" in the API and "Boon Lay Ave (Between Jalan Boon Lay and Boon Lay Drive)" on Telegram, so an API alert is matched to a post by kind, time and a loose name match, not by text or by area alone (two floods 9 minutes apart in Bedok on 12 Dec 2025).
 - **NEA publishes rain readings late:** see the reading-lag item under Gold.
+- **A yearly CSV can hold a reading twice:** NEA revised 88 weather readings minutes after publishing them, and the file keeps both versions, with the same file time. So `weather_1min` sequences by publication as well, and the revision wins.
+- **NEA lists some lightning strikes twice in one record** (232 of 12,225 on 13 Apr 2025, same millisecond, place and type), so a strike is keyed on all four.
+- **NEA re-published its early-2025 forecasts on 8 May 2025:** every API forecast issued from 1 Jan to about 7 May 2025 carries that day as `update_timestamp`, which hides them from gold's point-in-time join (see the `forecasts_2h` item in the checklist).
+- **SLA's vertical control points have no heights:** 314 points with a number, a status and an update time, every z 0. Elevation needs a DEM.
 
 ## Gold
 
@@ -516,12 +556,18 @@ Gold is its own pipeline, `flood-gold` (`resources/gold.pipeline.yml`, code in `
 |---|---|---|
 | `area_rain_stations` | area × gauge within 5 km | which gauges an area reads (493 pairs) |
 | `area_forecasts` | area × tick with a valid 2-hour forecast | the forecast a live fetch at the tick would have had |
-| `area_features` | area × tick with a reading in reach in the last hour | the models' inputs (`contract.AREA_FEATURES_COLUMNS`): rain and the forecast |
+| `tick_weather` | tick | the island-wide weather (mean temperature, humidity, wind over the stations), and how many lightning records of the last 30 minutes exist |
+| `area_lightning` | area × tick with a strike within 30 km in the last 30 minutes | strikes within 10 and 30 km |
+| `area_features` | area × tick with a reading in reach in the last hour | the models' inputs (`contract.AREA_FEATURES_COLUMNS`): rain and the forecast (required), and the rain around the area, the weather and lightning (optional) |
 | `feature_ticks` | tick of `label_ticks` | whether the tick's features are recorded, and why not |
 | `label_coverage` | interval between two consecutive recovered posts | where the label history is recorded or missing, and why |
 | `label_ticks` | tick, 27 Oct 2021 to the last complete midnight | whether the tick's label window is recorded, and its split |
 | `area_labels` | area × tick of `label_ticks` | the labels: `alert_status`, `alert_label`, `flood_label` |
 | `model_rows` | area × tick whose label and feature windows are both recorded | **what models learn from** (`split = 'train'`) and are tested on (`'test'`) |
+| `area_land_use` | area × Master Plan × land use | the share of the area in each land use, for the app and the dashboard |
+| `flood_prone_trend` | year | PUB's flood-prone hectares and the change from the year before, for the dashboard |
+
+Two private tables sit behind `area_features`: `gauge_rain` (each gauge's 15/30/60-minute totals at each tick, read for the area's own gauges and for the ones around it) and `area_nearby_rain`.
 
 ### Rain features
 
@@ -530,6 +576,16 @@ Gold is its own pipeline, `flood-gold` (`resources/gold.pipeline.yml`, code in `
 ### Forecast features
 
 `forecast_rain_class` at tick t is the rain class (0 none to 5 heavy thundery; `utilities/forecast_categories.py`) of the newest 2-hour forecast NEA had published for the area by t (`updated_at` ≤ t), while its 2-hour valid period lasts; `forecast_age_min` is how old it was. NEA publishes all 47 areas at once, about every 25 minutes and a median 9 minutes after the nominal issue time.
+
+### Rain around the area, weather and lightning
+
+These are the **optional** features (`contract.OPTIONAL_FEATURES`): null wherever their source has no data, which LightGBM reads as missing. Only the rain near the area and the forecast are **required** (`contract.REQUIRED_FEATURES`): `gold.feature_ticks` covers those, `gold.model_rows` keeps a row only where they are known, and the pair rates a row only where they are. So a source that starts late, or whose backfill hasn't landed, costs no row. Every value is what a live fetch at the tick could have had. Lightning is computed here too, but the models don't read it yet (`contract.HELD_BACK_FEATURES`, 16 Oct), so it isn't in `gold.model_rows`.
+
+- **Rain around the area:** `rain_nearby_30min_mm` is the largest 30-minute total among the gauges 5–20 km from the area's label point, read as the rain columns (published by t, ending 10 minutes before it); 0 where none of them rained. `rain_upwind_30min_mm` is the same among those within 45° of the direction the island-wide wind blows from, and null when that wind is under 2 knots: then the stations disagree, and there is no upwind. During storms they often do (on 22 Nov 2024 upwind was null from 14:00 to the alerts), so the nearby rain carries the signal: of the 661 dry training rows an alert followed (no rain within 5 km in the hour), 76% had rain 5–20 km away, against 15% of quiet dry rows, and among dry rows the alert rate with 15 mm or more nearby is about 95 times that with none (16 Oct).
+- **Weather:** `air_temp_c`, `rel_humidity_pct`, `wind_u_kn` and `wind_v_kn` are means over NEA's weather stations, each station's newest reading in the 5 minutes ending 10 minutes before t that NEA had published by t (`gold.tick_weather`). Island-wide: 19 stations can't give 47 areas their own, and they come and go. Wind is averaged as a vector, from NEA's 10-minute means of where it blows from. The means are of exact decimals, so a rebuild gives the same values.
+- **Lightning:** `lightning_10km_30min` and `lightning_30km_30min` count the strikes within 10 and 30 km of the label point in the 30 minutes before t, each from the moment NEA published its 2-minute record. They are null before 1 Feb 2025, and wherever one of the 15 records of the window is missing (`gold.tick_weather.lightning_records`), since a missing record means a feed outage, not a quiet sky. Strikes are binned to a 0.01° grid first, so a distance is off by at most 0.8 km.
+
+Checked on 16 Oct against hand recomputations from silver: the nearby rain on 6 random area-ticks of June 2023, and the temperature, humidity and wind on 5 random ticks of March 2022, all equal.
 
 ### Missing labels versus quiet ones
 
@@ -553,6 +609,8 @@ An `area_features` row exists wherever a gauge in reach reported in the last hou
 Why the forecast is a core feature (training ticks with rain features, 15 Oct): of 2,587 ticks an alert followed, 689 (27%) had no rain within 5 km in the hour the tick reads. That share grows with the time to the alert, from 6% within 15 minutes of it to 48% at 45–60 minutes: the early ticks, the ones that give lead time, are the dry ones. The forecast tells them apart: 52% of dry alert ticks had a forecast of rain (class 1 or more), against 7% of dry quiet ticks, and among dry ticks the alert rate under a thundery forecast (classes 4–5) is about 50 times that under a fair one.
 
 On 15 Oct, of the training split's 1,180 recorded label days, 763 have features. 210 are blind for want of forecasts, mostly Jan–Jun 2025, and 207 for want of rain, mostly Jul–Dec 2025 (`flood-etl` hadn't streamed the backfill past June). The whole test is blind. Both fill in as the API backfill lands and `flood-etl` and `flood-gold` run.
+
+On 16 Oct, with the rain and forecast backfill streamed through 14 Oct 2026: the test has features for 289.6 of its 295.4 recorded days (98%, past `train.py`'s 95% bar), and training for 970.5 of 1,180.3. Of training's 200 days blind for want of forecasts, 124 are Jan to 7 May 2025, whose forecasts NEA re-published on 8 May 2025 (the `forecasts_2h` item in the checklist): fixing their publication times would recover them, March 2025 included.
 
 ### The split
 
@@ -612,6 +670,12 @@ SELECT split, alert_status, count(*) FROM flood_dev.dev_<you>_gold.area_labels G
 SELECT l.split, l.label_window, f.feature_window, f.missing_reason, count(*) / 288.0 AS days
 FROM flood_dev.dev_<you>_gold.label_ticks l JOIN flood_dev.dev_<you>_gold.feature_ticks f USING (ts)
 GROUP BY ALL ORDER BY ALL;
+
+-- how often each optional feature is known, by year (the backfill fills 2025-26 in)
+SELECT year(ts) AS year, count(*) AS rows,
+       avg((air_temp_c IS NOT NULL)::int) AS weather, avg((rain_upwind_30min_mm IS NOT NULL)::int) AS upwind,
+       avg((lightning_10km_30min IS NOT NULL)::int) AS lightning, avg((rain_nearby_30min_mm > 0)::int) AS nearby_wet
+FROM flood_dev.dev_<you>_gold.area_features GROUP BY ALL ORDER BY 1;
 ```
 
 ### Things that bit us (gold)
@@ -620,6 +684,10 @@ GROUP BY ALL ORDER BY ALL;
 - **What blocks incremental refresh** (from the `planning_information` events): `max_by`/`min_by`, averages of floats, cross joins and Python UDFs. An update whose inputs didn't change is skipped either way.
 - **Unplaced alerts weigh more than their count:** they fall in storms, so blanking their hour for every area removes the most informative quiet labels and events from scoring. The 50 left after OneMap cost 58 of 452 events in the training window; hand-fix them before fitting for real.
 - **Judge an event by the tick an hour before it, not by every tick in the hour:** a tick's label window reaches an hour ahead (two with posting delays), so checking all ticks before an event rejected events for gaps that came after them. Fixing that recovered 60 of 452 events.
+- **A feature with gaps must be optional, not required:** `model_rows` drops every row with a null required feature, so lightning (from Feb 2025) as a required feature would have dropped every 2021–2024 row. New sources go in `OPTIONAL_FEATURES` unless a tick can't be judged without them.
+- **A feature missing for a whole period can stand in for the period:** on 16 Oct the weather was known for 77% of training rows (2021–2024) and none of the test, as the 2025–26 weather backfill hadn't landed. Fitted then, the models could read "no weather" as "2025", the year with most of the floods, a pattern no live tick shows. Refit only once each optional input is known in both splits (`input_coverage.json`).
+- **The surface wind is no guide to where a storm comes from:** in the hour before alerts the island-wide mean wind is under 2 knots 42% of the time (Nov–Dec 2024, against 28% otherwise), as the stations' winds scatter around a storm. Hence a null upwind there, and the direction-free nearby rain beside it.
+- **Free Edition runs one serverless compute at a time:** with the SQL warehouse running (a query from the CLI starts it), a pipeline update fails at once with `RESOURCE_EXHAUSTED: You've hit the limit for serverless compute for free usage`. Stop the warehouse (`databricks warehouses stop <id>`) or let it idle out, then start the update.
 
 
 ## Machine learning
@@ -637,6 +705,7 @@ A run logs to the MLflow experiment `/Users/<you>/[dev <you>] floodsense`:
 - the split (dates, folds), `split.summary`, and how much of each split the models can use (`coverage.json`, `usable_share_train`, `usable_share_test`);
 - the rule, fitted on the development period: its parameters, its `rule_dev_*` scoreboard metrics and its threshold curve;
 - the pair, once per gate recall tried (nested runs), then the one the scoreboard picked: `pair_*` (the gate's pass share and recall, rounds, cut-offs, Brier score), `oof_*` (out-of-fold scoreboard metrics with 95% CIs), the Medium curve, the reliability table, the inputs' importance and the event-by-event table;
+- `input_coverage.json`: per model feature, the share of development rows where it is known, among all rows and among those an alert followed; an optional input known for under half of them is warned about in the log;
 - the verdict: `beats_rule_lead`, `within_rule_false_alarms` and `beats_rule`. The pair's Medium cut-off may raise no more false alarms than the rule does, so the comparison is lead time at matched false alarms.
 
 Then it registers the pair in Unity Catalog (`flood_dev.dev_<you>_ml.dev_<you>_floodsense` in dev): every version as `@challenger`, and as `@champion` too when it beats the rule.
@@ -646,12 +715,12 @@ Then it registers the pair in Unity Catalog (`flood_dev.dev_<you>_ml.dev_<you>_f
 `ml/gated.py` has the details:
 
 1. **Gate:** a LightGBM on every training row (quiet rows subsampled to 5% and weighted back up). Its out-of-fold scores set its threshold, the highest that still passes the target share of the ticks an alert followed (`gate_recall`).
-2. **Rater:** a LightGBM on the rows the out-of-fold gate passed, its alert chance never falling as rain or the forecast class rises.
+2. **Rater:** a LightGBM on the rows the out-of-fold gate passed, its alert chance never falling as rain, rain around the area, lightning or the forecast class rises.
 3. **Calibration:** centered isotonic regression on the rater's pooled out-of-fold scores. Screened-out rows get the screened-out alert rate.
-4. **Cut-offs**, by the scoreboard on the pooled out-of-fold probabilities, as `baseline.fit` sets the rule's: Medium flags the most PUB events before PUB within the false-alarm budget; High is the lowest higher cut-off whose High warnings are followed by a flood at least 1 time in 3.
+4. **Cut-offs**, by the scoreboard on the pooled out-of-fold probabilities, as `baseline.fit` sets the rule's: Medium flags the most PUB events before PUB within the false-alarm budget; High is the lowest higher cut-off whose High warnings are followed by a flood at least 1 time in 3. Every cut-off lies above the screened-out rows' probability, so Medium never warns the rows the gate screened out.
 5. Both models are refitted on the whole development period, with the rounds the folds chose.
 
-Inputs: the area (as a category), the SGT hour, and the `area_features` columns (`contract.MODEL_FEATURES`). A new gold column needs adding there and to `MODEL_ROWS`; the models pick it up.
+Inputs: the area (as a category), the SGT hour, and the `area_features` columns (`contract.MODEL_FEATURES`). A row is rated only where the required ones are known (rain near the area and the forecast); the optional ones (rain around the area and upwind, the island-wide weather) may be null, which LightGBM reads as missing. The alert chance may only rise with rain, rain around the area and the forecast class (`gated.RISING`). A new gold column needs adding to `contract.AREA_FEATURES_COLUMNS`, and to `REQUIRED_FEATURES` only if a tick can't be judged without it; the models pick it up unless it is in `HELD_BACK_FEATURES` (lightning, on 16 Oct). The rows a scorer passes may carry held-back columns; the pair ignores them.
 
 ### Results so far
 
@@ -670,7 +739,7 @@ Inputs: the area (as a category), the SGT hour, and the `area_features` columns 
 This isn't the model to test yet. 2025 is a third of the training time and holds most of its floods. Once the API backfill has landed rain and forecasts through 12 Oct 2026:
 
 1. `databricks bundle run etl -t dev -p flood_dev` (silver);
-2. `databricks bundle run train -t dev -p flood_dev` (gold, then a refit). Check that `usable_share_train` is near 1 and `usable_share_test` at least 0.95, and that the pair still beats the rule;
+2. `databricks bundle run train -t dev -p flood_dev` (gold, then a refit). Check that `usable_share_train` is near 1 and `usable_share_test` at least 0.95, that every optional input is known in both splits (`input_coverage.json` for training; the weather needs its 2025–26 backfill), and that the pair still beats the rule;
 3. only then, once: `databricks bundle run train -t dev -p flood_dev --params score_test=true`.
 
 ### Reading a run's artifacts

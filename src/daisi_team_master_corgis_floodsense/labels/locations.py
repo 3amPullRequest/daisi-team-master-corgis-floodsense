@@ -4,6 +4,23 @@ longitude, and the words to look a location up by.
 Silver geocodes each alert location (silver.location_gazetteer) by, in order: a hand fix, PUB's own coordinates from
 the flood-alerts API, the water-level sensor of the same name (the 90% warnings come from those sensors), and a OneMap
 search. The alert's area is the NEA forecast area whose label point is nearest.
+
+Alert locations are free text, spelt differently from one alert to the next and nothing like the sensors' names, so
+most of this module is about deciding that two spellings name one place without a geocoder's help:
+
+- `location_key` is the normal form: case-folded, punctuation dropped, and PUB's abbreviations spelt out ("Jln" is
+  "jalan", "Bt" is "bukit"). Spelling variants of a place share a key, and silver groups, joins and caches on it.
+- `name_match` scores how surely a location names a given place name, from 0 to 1: the share of words they have in
+  common (leaving out words that only relate a place to a road, such as "near", "towards" and "junction", and the
+  suffixes of drain sensors' names), counted against the longer of the two. SAME_NAME is the score from which two
+  names are one place. Below it, matches land on the wrong stretch of a long road or on a building named after the
+  road. Silver's sensor matching and ingest/onemap.py use the same bar.
+- `search_queries` turns a location into OneMap queries, best guess first: as written, then without its note and
+  brackets, then each road it names outside the brackets, then those inside. Queries that are too short or name no
+  place ("Exit", "Service road") are dropped.
+- `svy21_to_wgs84` converts the coordinates of PUB's sensor list from SVY21, Singapore's metric grid, to latitude and
+  longitude, and `haversine_km` measures distances. Silver repeats the distance in Spark
+  (pipeline/utilities/silver.distance_km) for its nearest-area and nearest-gauge decisions.
 """
 
 from __future__ import annotations

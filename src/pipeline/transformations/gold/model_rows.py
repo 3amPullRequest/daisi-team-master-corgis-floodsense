@@ -2,9 +2,18 @@
 contract.MODEL_ROWS_COLUMNS defines them.
 
 A row is there only if its label window is recorded (gold.label_ticks), its feature window is recorded
-(gold.feature_ticks) and none of its model features is null. So a missing interval never reaches a model: not its quiet
-ticks, which may hide lost alerts, and not the alerts that did come back from it, which kept alone would inflate the
-alert rate around every lost post. The expectations fail the update rather than let such a row through.
+(gold.feature_ticks) and none of its required features is null. So a missing interval never reaches a model: not its
+quiet ticks, which may hide lost alerts, and not the alerts that did come back from it, which kept alone would inflate
+the alert rate around every lost post. The expectations fail the update rather than let such a row through. The
+optional features (contract.OPTIONAL_FEATURES: the weather, the rain upwind) may be null. Lightning isn't a
+model feature yet (contract.HELD_BACK_FEATURES), so it isn't here.
+
+This one table is where the rule "a missing interval is not a quiet one" is enforced for the models, because it is the
+only table they read. It is built by inner joins, so a row that fails any condition simply is not there: area_features
+rows with every required feature present, kept for the ticks of gold.feature_ticks whose window is recorded, and
+joined to the area_labels rows with no missing reason, in the train or test split (the embargo and after_split ticks
+fall out here). The three expectations (labels known, features known, split is train or test) are tripwires, not
+filters: they fail the update if a join ever lets such a row through.
 """
 
 from pyspark import pipelines as dp
@@ -13,14 +22,15 @@ from utilities.contract_tables import MODEL_ROWS_SCHEMA
 
 from daisi_team_master_corgis_floodsense.ml import contract as C
 
-FEATURES_KNOWN = " AND ".join(f"{c} IS NOT NULL" for c in C.MODEL_FEATURES)
+FEATURES_KNOWN = " AND ".join(f"{c} IS NOT NULL" for c in C.REQUIRED_FEATURES)
 
 
 @dp.materialized_view(
     name=C.MODEL_ROWS,
     comment="The area-ticks models learn from (split = 'train') and are tested on once (split = 'test'): "
     "gold.area_features joined to gold.area_labels wherever both the label window and the feature window are "
-    "recorded and no model feature is null. No missing interval reaches a model, not even one that saw an alert.",
+    "recorded and no required feature is null (the optional ones may be). No missing interval reaches a model, not "
+    "even one that saw an alert.",
     schema=MODEL_ROWS_SCHEMA,
     cluster_by=["ts", "area"],
 )

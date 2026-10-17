@@ -8,6 +8,29 @@
   with its place. An API flood that Telegram also posted is the same alert, marked as such.
 - silver.area_alerts: the labels the models read, exactly ml/contract.py AREA_ALERTS_COLUMNS: placed alerts, each once.
 - silver.alerts_unplaced: alerts no method could place, to fix by hand.
+
+The steps, in the order the code runs them (a step is built only when its sources have landed):
+
+1. `alert_locations` (a temporary view) puts both sources into one table of alert locations. A Telegram post that names
+   several places gives a row for each, timed by that place's stamp, else by the posting. An API alert gives one row,
+   with PUB's own circle. Every row gets a `location_key`, so spellings of one place are one place.
+2. `api_alert_matches` finds the API floods that are also Telegram posts, because PUB wrote those twice and an alert
+   must count once. A pair has the same kind, is stamped within SAME_ALERT_S of each other, and names the place alike
+   (a looser name score than the gazetteer's, since PUB words the API's text apart from the post's); the closest in
+   time wins.
+3. `location_gazetteer` places each location, taking the first method that works: a hand fix; PUB's circle (also given
+   to the Telegram location that is the same alert); the water-level sensor best named like it, accepted only if it
+   scores at least SAME_NAME and no other sensor names it as well from more than SAME_PLACE_KM away; or the first
+   OneMap query whose top result is in Singapore and names the place. The area is then the nearest of the 47 label
+   points. The table also keeps the best sensor and OneMap candidates, and how far OneMap's answer lies from the chosen
+   point, so a wrong placement can be spotted.
+4. `alerts` is every alert row with its place and area, an API flood that is a Telegram post's alert marked with that
+   post's id (`same_as_message_id`).
+5. `area_alerts` is what the models and the scoreboard read: the placed alerts, API duplicates left out so that
+   Telegram's stamp is kept, one row per area, kind, time and location. An expectation drops any row without an area.
+6. `alerts_unplaced` is the quarantine: the alerts no method placed, each with the best sensor and OneMap candidates as
+   a start for a hand fix. gold.label_ticks reads it, so that an alert that could belong to any area hides the labels
+   around it, rather than quietly missing from some area's.
 """
 
 from pyspark import pipelines as dp

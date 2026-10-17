@@ -44,6 +44,24 @@ def test_the_test_is_refused_until_its_features_land():
     train.check_test_coverage(coverage(290.0, 5.3))  # 98%: scored
 
 
+def test_input_coverage_shows_an_optional_feature_that_hasnt_landed():
+    # four rows, two with an alert after them; the weather has landed for the first only
+    rows = pd.DataFrame(
+        {
+            **{c: [1.0] * 4 for c in C.MODEL_FEATURES},
+            "alert_label": [1, 0, 1, 0],
+        }
+    )
+    rows.loc[1:, "air_temp_c"] = None
+    inputs = train.input_coverage(rows).set_index("feature")
+    assert list(inputs.index) == list(C.MODEL_FEATURES)
+    assert inputs.loc["air_temp_c", "known_share"] == 0.25
+    assert inputs.loc["air_temp_c", "known_share_alert_rows"] == 0.5
+    assert not inputs.loc["air_temp_c", "required"]
+    assert inputs.loc["rain_15min_mm", "required"]
+    assert inputs.loc["rain_15min_mm", "known_share"] == 1.0
+
+
 def test_fits_rank_by_events_flagged_then_lead_then_fewer_false_alarms():
     def m(flagged, lead, false_alarms):
         return {

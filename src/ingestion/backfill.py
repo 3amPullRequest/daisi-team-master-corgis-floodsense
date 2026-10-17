@@ -8,6 +8,10 @@ onemap            OneMap searches for the alert locations not searched yet, for 
 uhslc             UHSLC hourly sea level at Tanjong Pagar
 
 uv run python src/ingestion/backfill.py api-days --landing /Volumes/flood_dev/dev_<you>_bronze/landing --profile flood_dev
+
+This file holds no logic of its own. It is the entry point the flood-backfill job and a laptop run both start: it puts
+src/ on sys.path, calls `main` of daisi_team_master_corgis_floodsense.ingest.history (where each subcommand is
+explained), and exits with its status so that a Databricks task is marked failed when the run failed.
 """
 
 import inspect

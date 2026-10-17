@@ -1,4 +1,21 @@
-"""Flags and setup shared by the src/ingestion/*.py entry points."""
+"""Flags and setup shared by the src/ingestion/*.py entry points.
+
+Each entry point is a thin script over a `main` in this package, and every `main` starts the same way:
+`add_common_args` gives it the shared flags, and `setup` turns them into the two things a fetcher needs, an `Http`
+client and a `Sink` to land files in.
+
+- Where files go. --landing (or $FLOODSENSE_LANDING) is the landing root, and --sink picks between writing to it as a
+  folder and uploading with the Files API (sinks.make_sink; "auto" decides by whether the path exists here).
+- Which key. `resolve_api_key` takes the data.gov.sg key from $DATAGOVSG_API_KEY, else from the `floodsense`
+  Databricks secret scope (read through dbutils inside a Databricks job, through the workspace API as --profile
+  elsewhere, so jobs and laptop runs share one key), and otherwise carries on without one at the lowest rate limit.
+  It logs where the key came from, never the key. --key-tier says which rate limit the key has, since nothing in a key
+  reveals that (keycheck.py measures it).
+- Who ran it. --runner is written into every landed line (`databricks-job`, or `local:<host>`), so any file can be
+  traced to the process that fetched it.
+
+`parse_duration` reads the '90s', '5m', '5h30m' form of --every, --offset and --max-runtime.
+"""
 
 from __future__ import annotations
 

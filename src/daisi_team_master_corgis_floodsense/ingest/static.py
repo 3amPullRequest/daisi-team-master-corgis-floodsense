@@ -1,8 +1,17 @@
 """Static context layers from data.gov.sg (land use, PUB water-level sensors, flood-prone area, SLA benchmarks).
-
 Each layer lands under `<name>/version=<lastUpdatedAt date>/`: the original file (kept for audit, ignored by Auto
 Loader) and a readable copy, one GeoJSON feature or spreadsheet row per JSONL line, written last. A layer whose
-readable copy exists for the current version is skipped, so re-runs only fetch layers that data.gov.sg updated."""
+readable copy exists for the current version is skipped, so re-runs only fetch layers that data.gov.sg updated.
+
+For each layer, `fetch_static` asks data.gov.sg for the dataset's metadata and takes its `lastUpdatedAt` date as the
+version. If the readable copy of that version is already there, it moves on. Otherwise it downloads the file (the
+presigned-URL handshake in client.py) and lands it twice. The original bytes are kept for audit under a name Auto
+Loader doesn't read (.geojson.gz, .xlsx). The readable copy is what bronze streams: for GeoJSON, one JSONL line per
+feature (`feature_index`, `feature`); for a spreadsheet, one line per row (`sheet`, `row_index`, `row`, built by
+`xlsx_rows` from the first non-empty row of each sheet as the header, every value as text); for CSV, the file itself.
+Each line also carries the dataset id, name and version. The readable copy is written last, so its presence is what
+marks a version done. A newer version lands beside the old ones, and silver reads the newest.
+"""
 
 from __future__ import annotations
 
@@ -131,7 +140,7 @@ def _text(value: object) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     add_common_args(parser)
     parser.add_argument(
         "--layers",

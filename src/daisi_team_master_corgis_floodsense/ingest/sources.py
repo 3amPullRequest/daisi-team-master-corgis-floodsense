@@ -2,6 +2,26 @@
 
 Contract with the pipeline: files under `landing/<name>/` are streamed into `bronze.<name>`, so a source's `name`
 is both its landing folder and its bronze table (tests/test_bronze_contract.py checks the two sides agree).
+
+This module is the catalogue every fetcher shares. It fetches nothing itself; it says what exists, where a fetch of it
+lands, and what a landed line looks like:
+
+- The sources. API_SOURCES are the nine data.gov.sg v2 real-time endpoints (PUB flood alerts, NEA rainfall, 2-hour
+  forecast, wind direction and speed, lightning, air temperature, relative humidity, radar), listed in backfill
+  priority: the labels and rainfall first, the slow 1-minute sensors last. Six of them also have a yearly "Historical
+  ..." CSV collection (`csv_collection`), landed as `<name>_hist`; the API then only has to cover the years after the
+  last published CSV. The rest start where the API does (`api_start`). STATIC_LAYERS are one-off datasets, and the
+  TELEGRAM, TIDES, UHSLC, ONEMAP and HEARTBEAT names are the folders that don't come from the real-time API.
+- The channel's history. PUB renamed its Telegram channel but kept the post ids, so TELEGRAM_ALIASES says which
+  username to ask the web archive for on which days, and WAYBACK_UNTIL where captures stop adding posts the channel
+  doesn't still show.
+- The landing layout, as path builders. A fetch always lands as a new file and nothing is overwritten in place: a live
+  tick as `<name>/live/date=<SGT day>/<name>_<UTC stamp>.jsonl`, a backfilled day as one `<name>/backfill/date=<day>/`
+  file whose existence marks the day done, a yearly CSV under `year=`, a static layer under `version=`. Fetcher
+  cursors sit in `_state/`, outside every table folder, so Auto Loader never reads them.
+- The shape of a landed line. An API page is wrapped untouched in an envelope (`api_envelope`: source, fetched_at,
+  runner, the request, the status, the body as received), so bronze keeps exactly what the API said and silver does
+  all the interpreting. Every other source gets the same envelope fields plus its own (`record`).
 """
 
 from __future__ import annotations

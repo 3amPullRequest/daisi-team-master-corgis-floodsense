@@ -10,6 +10,32 @@ where web.archive.org captured them, under the username the channel had then (`s
 Both parse like the live channel page. The archive holds thousands of captures, mostly repeats, and throttles busy
 clients, so posts are recovered id by id from as few captures as possible. Each capture read lands as one file under
 `pub_telegram_posts/wayback/`, which also marks it as read; a re-run rebuilds what it knows from those files.
+
+How a run works:
+
+1. List the captures. `list_captures` asks the archive's CDX index for every capture of the channel's pages and embedded
+   posts under each username in its window, on both t.me and telegram.me. `_classify` turns each URL into a `Capture`
+   and says which post ids it should show: a page around post n shows about n-9 to n+9, a `?before=n` page n-20 to
+   n-1, an `?after=n` page n+1 to n+20, an embedded post just itself, and a "newest" page (t.me/s/<username>) the
+   newest ~20 posts as of its time, which isn't known from the URL. Other URLs are dropped.
+2. Keep score. `Recovered` holds what the captures read so far say about each post id: the posts recovered and when
+   each was posted; the ids known to be gone (a channel page shows every post between its first and last, so an id
+   missing inside it had been deleted by the time of that capture); and the capture times at which a page had no link
+   to newer posts and so ended at the channel's newest post. From these, `expected` predicts which ids a newest page
+   will show, `can_add` says whether a capture taken at a given time could still contribute a post (it isn't
+   recovered, wasn't deleted by then, and had been posted by then), and `gain` counts how many ids a capture would add.
+3. Walk the ids. `telegram_wayback` goes through post ids 1 up to the highest any capture names, and for each id not
+   yet recovered reads the unread capture that covers it and would add the most missing ids (the earliest on a tie),
+   until one shows the post or none can. Reading posts sharpens what the newest pages are expected to show, so the
+   walk repeats until a whole pass reads nothing. It sleeps between requests, and stops at the deadline.
+4. Read a capture. `_read` fetches the capture exactly as archived (the `id_` form of the URL, unrewritten), parses it
+   with the same listing parser as the live page, discards a capture of another channel (the unrelated channel that
+   later took the name sgflood; its title lacks "Flood Alerts"), and lands the posts with `captured_at`, so silver
+   dates a post's version by when the archive saw it. The file is written even when empty, since its existence is what
+   marks the capture read.
+
+The summary says what was recovered by year and what wasn't, with the ids by reason: deleted before any capture saw
+them, covered by no capture at all, or covered by captures that were read and didn't show them.
 """
 
 from __future__ import annotations

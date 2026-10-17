@@ -1,6 +1,15 @@
 """Which ingestion hosts this machine can reach. Databricks Free Edition limits outbound internet to a set of
 trusted domains, so run this on serverless first: it decides whether the fetchers can run as Databricks jobs
-("native") or must run outside and upload with the Files API ("local")."""
+("native") or must run outside and upload with the Files API ("local").
+
+`probe` makes one streamed GET to a representative URL of each host in TARGETS and reads only the status line, since
+the question is whether the network path is open, so any HTTP answer, even a 403 or 404, counts as reachable. A
+failure is told apart as a timeout, a DNS failure or another connection error, because they point at different fixes.
+TARGETS marks which hosts the fetchers need to run natively (data.gov.sg's APIs and file store, NEA's radar store, the
+Telegram channel); the others (NEA tides, UHSLC, OneMap, and PyPI as a control that proves the machine has some
+internet) are reported but don't decide the verdict. `main` prints one line per host and the verdict, native if every
+needed host answered, else local, naming the ones that didn't.
+"""
 
 from __future__ import annotations
 

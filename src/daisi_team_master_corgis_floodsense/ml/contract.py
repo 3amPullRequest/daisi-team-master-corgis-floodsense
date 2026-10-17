@@ -6,6 +6,30 @@ next hour? The rainfall-rule baseline and the gated LightGBM read the same table
 grain, label or scoring rule.
 
 Timestamps are SGT; naive ones are read as SGT.
+
+The tables, in the order data flows through them, with the constants that define each below:
+
+- silver.area_alerts (AREA_ALERTS_COLUMNS): PUB's alerts, each placed in a forecast area, once. The only source of
+  labels.
+- gold.label_ticks and gold.area_labels (LABEL_TICKS_COLUMNS, AREA_LABELS_COLUMNS): for every area and 5-minute tick,
+  whether a PUB alert came within the next hour, with the ticks whose label window was never recorded kept apart.
+- gold.area_features and gold.feature_ticks (AREA_FEATURES_COLUMNS, FEATURE_TICKS_COLUMNS): what each area had seen by
+  each tick, and whether the inputs behind a tick were recorded.
+- gold.model_rows (MODEL_ROWS_COLUMNS): the features joined to the labels wherever both windows are recorded. The only
+  table the models learn from or are tested on.
+- ml.predictions (PREDICTIONS_COLUMNS): each model's tier, probability and reason per area and tick, for the app, the
+  dashboard and the scoreboard.
+
+Three rules run through all of it:
+
+- Point in time. A value at tick t is only what a live fetch at t could have had: a reading counts from
+  READING_LAG_MINUTES after its timestamp and not before NEA published it, a forecast from its publication. So training
+  rows and replays of past storms match what the live model sees.
+- Missing is not zero. PUB deleted channel history and NEA's feeds have outages, so some ticks have no recorded
+  label or no recorded feature. Those are marked missing, never read as quiet, and kept out of the models and the
+  scoreboard (RECORDED/MISSING and the reasons).
+- One grain, one split. Every table is per area and tick, the horizon is HORIZON_MINUTES, and the train/embargo/test
+  dates are fixed constants computed once from the recorded label time (TRAIN_START, TEST_START, SPLIT_END).
 """
 
 from __future__ import annotations
@@ -73,6 +97,37 @@ def _rain_doc(minutes: int) -> str:
     )
 
 
+# Rain beyond the area's own gauges: storms close enough to arrive within the hour. Upwind is within
+# UPWIND_HALF_ANGLE_DEG of the direction the island-wide wind blows from; a mean wind under UPWIND_MIN_WIND_KN (calm,
+# or stations that disagree) gives no upwind.
+NEARBY_RAIN_KM = (GAUGE_RADIUS_KM, 20.0)
+NEARBY_RAIN_MINUTES = 30
+UPWIND_HALF_ANGLE_DEG = 45.0
+UPWIND_MIN_WIND_KN = 2.0
+# Weather: the mean over NEA's stations of each one's newest reading in the WEATHER_MINUTES ending
+# READING_LAG_MINUTES before the tick, published by the tick. Island-wide, as 19 stations can't give 47 areas their own.
+WEATHER_MINUTES = 5
+# Lightning: NEA lists strikes in a record every 2 minutes, published about 2 minutes after it closes, from
+# LIGHTNING_START. A tick's window is known only when every record of it exists.
+LIGHTNING_START = date(2025, 2, 1)
+LIGHTNING_MINUTES = 30
+LIGHTNING_RECORD_MINUTES = 2
+LIGHTNING_RECORDS_PER_WINDOW = LIGHTNING_MINUTES // LIGHTNING_RECORD_MINUTES
+LIGHTNING_RADII_KM = (10, 30)
+
+
+def lightning_column(km: int) -> str:
+    return f"lightning_{km}km_{LIGHTNING_MINUTES}min"
+
+
+def _lightning_doc(km: int) -> str:
+    return (
+        f"lightning strikes NEA observed within {km} km of the area's forecast point in the {LIGHTNING_MINUTES} "
+        f"minutes before ts, as published by ts; null before {LIGHTNING_START.isoformat()} and where NEA's "
+        f"{LIGHTNING_RECORD_MINUTES}-minute records of those minutes are incomplete"
+    )
+
+
 # NEA's 2-hour forecast, as a live fetch at the tick would have had it: the newest one published (updated_at) by ts,
 # while its valid period lasts. rain_class orders the categories (pipeline/utilities/forecast_categories.py).
 RAIN_CLASSES = {
@@ -95,9 +150,37 @@ AREA_FEATURES_COLUMNS = {
     + ", ".join(f"{k} {v}" for k, v in RAIN_CLASSES.items())
     + "; null if none was valid",
     "forecast_age_min": "minutes from that forecast's publication to ts; null with it",
+    "rain_nearby_30min_mm": f"largest {NEARBY_RAIN_MINUTES}-minute rainfall total among NEA gauges "
+    f"{NEARBY_RAIN_KM[0]:g}-{NEARBY_RAIN_KM[1]:g} km from the area's forecast point, from the readings published by "
+    "ts as for the rain columns: rain close enough to arrive within the hour; 0 if none of those gauges rained",
+    "rain_upwind_30min_mm": f"the same, among those gauges within {UPWIND_HALF_ANGLE_DEG:g} degrees of the direction "
+    f"the wind blows from (wind_u_kn, wind_v_kn); null when the wind is unknown or under {UPWIND_MIN_WIND_KN:g} knots",
+    "air_temp_c": "mean air temperature (deg C) over NEA's weather stations, each station's newest reading in the "
+    f"{WEATHER_MINUTES} minutes ending {READING_LAG_MINUTES} min before ts that NEA had published by ts; null if no "
+    "station had one",
+    "rel_humidity_pct": "mean relative humidity (%), read as air_temp_c",
+    "wind_u_kn": "mean wind over the stations, read as air_temp_c: the eastward component (knots) of NEA's 10-minute "
+    "means",
+    "wind_v_kn": "its northward component (knots)",
+    **{lightning_column(km): _lightning_doc(km) for km in LIGHTNING_RADII_KM},
 }
-# The columns a model reads, all of them known at the tick. The gated pair also reads the area and the SGT hour.
-MODEL_FEATURES = tuple(c for c in AREA_FEATURES_COLUMNS if c not in ("area", "ts"))
+# gold.area_features columns the models don't read yet: lightning (16 Oct). To feed it to them, drop it from here and
+# give it its monotone constraint and its reason in gated.py.
+HELD_BACK_FEATURES = tuple(lightning_column(km) for km in LIGHTNING_RADII_KM)
+# The columns a model reads, each as it stood at the tick. The gated pair also reads the area and the SGT hour.
+MODEL_FEATURES = tuple(
+    c for c in AREA_FEATURES_COLUMNS if c not in ("area", "ts", *HELD_BACK_FEATURES)
+)
+# Of those, the ones a tick needs to be modelled or rated: rain near the area and the forecast (gold.feature_ticks).
+# The rest come from sources that can be missing at a tick (weather stations have outages, and their 2025-26 days
+# arrive with the backfill; a calm has no upwind), so they stay null there, and LightGBM reads a null as missing.
+REQUIRED_FEATURES = (
+    *(rain_column(w) for w in RAIN_WINDOWS_MINUTES),
+    "rain_gauges",
+    "forecast_rain_class",
+    "forecast_age_min",
+)
+OPTIONAL_FEATURES = tuple(c for c in MODEL_FEATURES if c not in REQUIRED_FEATURES)
 
 # Whether a tick's label is known. Its label reads PUB alerts stamped in (ts, ts + HORIZON]; PUB posts an alert at
 # most 35 min after its stamp (Telegram 2021-2026; rounded up here), and the post parser accepts a stamp up to
@@ -162,7 +245,7 @@ FEATURE_TICKS_COLUMNS = {
 
 # gold.model_rows: the area-ticks models learn from (split 'train') and are tested on (split 'test'): every row of
 # gold.area_features joined to gold.area_labels where the label window and the feature window are both recorded and
-# no model feature is null. A missing interval never reaches a model, not even one that saw an alert: keeping those
+# no required feature is null. A missing interval never reaches a model, not even one that saw an alert: keeping those
 # would keep a missing window's alerts but none of its quiet ticks, and inflate the alert rate wherever posts were lost.
 MODEL_ROWS = "model_rows"
 MODEL_ROWS_COLUMNS = {

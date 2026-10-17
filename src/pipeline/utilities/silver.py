@@ -1,5 +1,19 @@
 """What the silver tables share: their schema, which bronze folders have landed, VARIANT accessors, the floodsense
-parsers as Spark UDFs, and the hand-kept seed files in data/static/."""
+parsers as Spark UDFs, and the hand-kept seed files in data/static/.
+
+- Where things are. `schema` is the silver schema, set in the pipeline's configuration, and `landed` says which of the
+  bronze tables have a landing folder, so a silver table is only defined from sources that exist and an update never
+  fails for a source not fetched yet.
+- Reading bronze. Bronze rows hold the API's JSON as a VARIANT, and `get` and `get_ts` read a typed field from it, or
+  NULL when it is missing or of another type, never an error. `in_singapore` and `distance_km` are the coordinate
+  check (a box around the island and its islets) and the haversine distance (as labels/locations.haversine_km) that
+  silver uses to place points.
+- The floodsense parsers. `parse_alert`, `location_key`, `name_match` and `svy21_to_wgs84` are the pure-Python
+  functions of the labels package wrapped as UDFs, so Spark reads alerts exactly as the fetchers and tests do. Their
+  modules are registered with cloudpickle to travel by value: the executors can't import this repository's package.
+- Seeds. `seed` reads a CSV kept by hand in data/static/ (the Telegram label fixes, the gazetteer fixes), with its
+  columns cast from text, or an empty table when the file is missing.
+"""
 
 import csv
 import os

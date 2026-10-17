@@ -2,11 +2,17 @@
 
 import csv
 import re
+from itertools import pairwise
 from pathlib import Path
 
 from utilities.bronze_sources import CSV_TABLES, HEARTBEAT_TABLE, JSON_TABLES
 from utilities.contract_tables import AREA_ALERTS_SCHEMA, AREA_ALERTS_TYPES
 from utilities.forecast_categories import FORECASTS
+from utilities.silver_sources import (
+    MASTER_PLANS,
+    WEATHER_EXTREMES_2021_2024,
+    WEATHER_VARIABLES,
+)
 
 from daisi_team_master_corgis_floodsense.labels import alert_text as T
 from daisi_team_master_corgis_floodsense.ml import contract as C
@@ -48,6 +54,27 @@ def test_forecast_codes_agree_with_the_yearly_csvs():
     assert [FORECASTS[t][1] for t in heavier] == sorted(
         FORECASTS[t][1] for t in heavier
     )
+
+
+def test_weather_and_land_use_read_bronze_tables():
+    # silver names these tables in variables, which test_silver_reads_only_tables_that_exist can't see
+    for api, _ in WEATHER_VARIABLES.values():
+        assert api in JSON_TABLES and f"{api}_hist" in CSV_TABLES, api
+    assert set(MASTER_PLANS) <= set(JSON_TABLES)
+
+
+def test_weather_bounds_keep_every_reading_of_2021_2024():
+    assert set(WEATHER_EXTREMES_2021_2024) == set(WEATHER_VARIABLES)
+    for variable, (lowest, highest) in WEATHER_EXTREMES_2021_2024.items():
+        low, high = WEATHER_VARIABLES[variable][1]
+        assert low <= lowest and highest <= high, variable
+
+
+def test_master_plans_hand_over_without_a_gap():
+    spans = sorted((start, end) for _, start, end in MASTER_PLANS.values())
+    for (_, end), (start, _) in pairwise(spans):
+        assert end == start
+    assert spans[-1][1] is None  # the newest plan is in force
 
 
 def _seed_header(name: str) -> list[str]:

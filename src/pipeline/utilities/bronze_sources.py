@@ -2,6 +2,14 @@
 
 The ingestion scripts (src/ingestion) write those folders; tests/test_bronze_contract.py keeps both sides in step.
 Pure data, so it imports without Spark.
+
+This is the one list of what bronze contains, read by transformations/bronze/landing.py to define the tables and by the
+tests to check it against ingest/sources.py. JSON_TABLES are the folders of JSON Lines (the API pages, the Telegram
+posts, the tide rows, the OneMap answers, the static layers' features and rows), each with the comment that becomes the
+table's description. CSV_TABLES are the folders of CSV (the yearly historical files, the UHSLC record, the flood-prone
+area), each with its explicit schema, every column as text, and whether the file has a header; casting is silver's job.
+The yearly files for rainfall, temperature and wind share one set of column names (`_READING_COLUMNS`), relative
+humidity's is the same without `reading_type`, and the 2-hour forecast has its own.
 """
 
 # JSON Lines folders: every line becomes one row with the whole line as `payload` (VARIANT).

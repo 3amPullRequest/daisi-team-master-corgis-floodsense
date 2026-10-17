@@ -5,6 +5,10 @@ run it in a loop and upload with the Files API:
 
     uv run python src/ingestion/fetch_live.py --landing /Volumes/flood_dev/dev_<you>_bronze/landing \
         --profile flood_dev --every 5m --daily-repair --trigger-job <flood-live job id>
+
+This file holds no logic of its own. It puts src/ on sys.path and calls `main` of
+daisi_team_master_corgis_floodsense.ingest.live, which lands one tick (or repeats ticks with --every) and records a
+heartbeat. The exit status is non-zero when any source failed, which marks the Databricks task failed.
 """
 
 import inspect

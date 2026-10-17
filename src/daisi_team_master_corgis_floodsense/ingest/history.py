@@ -1,6 +1,29 @@
 """Backfill from 2021 up to yesterday: yearly CSVs where data.gov.sg publishes them, v2 API day pages for every
 later day, the Telegram archive (plus the posts PUB deleted, from web archive captures) and the UHSLC tide gauge
-record. Each step skips what has already landed."""
+record. Each step skips what has already landed.
+
+Resuming works because every unit of work lands as one file, written last, and a re-run skips any unit whose file
+exists. So a run can be stopped anywhere, by --max-runtime (a clean stop at a deadline, for a time-limited Databricks
+task or an overnight laptop run) or by a crash, and the next run carries on without redoing or duplicating anything.
+The subcommands of `main`:
+
+- csv (`hist_csv`): for each source with a CSV collection, ask data.gov.sg which years are published and land each
+  year's file under `<name>_hist/year=<y>/`, streamed through the sink and gzipped when uploading. A year that isn't
+  published yet is reported and left to api-days.
+- api-days (`api_days`): for each API source in priority order, from the day after its last CSV year (or its own start
+  date) to yesterday SGT, land every page of each day as one gzipped file under `<name>/backfill/`. A day with no data
+  still gets a file, holding the 404 or the empty page, so it isn't asked for again. Radar days also save each frame's
+  PNG on the spot (`archive_radar_frames`, shared with live.py), because its presigned URL expires about 25 minutes
+  after the API answered. live.py's daily repair calls `api_days` for yesterday.
+- telegram (`telegram_archive`): page back through t.me/s/pubfloodalerts with ?before=<oldest id seen> to the oldest
+  post the channel still shows, and land one file with all of them. Its summary counts posts per year, a quick check
+  for gaps.
+- telegram-wayback and onemap hand over to wayback.py and onemap.py; uhslc downloads the tide gauge CSV once and keeps
+  its row count in a cursor.
+
+A backfill uses 60% of the key's rate limit (live ticks use 80%), and because the sources are listed by priority a run
+that is cut short has the labels and rainfall before the slow 1-minute sensors.
+"""
 
 from __future__ import annotations
 

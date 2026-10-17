@@ -6,6 +6,14 @@ look (no format matched, or one matched with a problem). Run it after adding a p
 The folder is a local copy of landing/pub_telegram_posts (`databricks fs cp -r dbfs:/Volumes/.../pub_telegram_posts
 .landing-dev/pub_telegram_posts -p flood_dev`). Silver applies the same rules, so the counts match
 silver.telegram_posts.
+
+The report is built in three steps. `landed_posts` reads every JSON Lines file under the folder, gzipped or not.
+`latest_versions` keeps one version per post id, since the same post lands many times (each channel scrape, each web
+archive capture, each live tick); the latest is judged by when the post was seen, which for an archive capture is
+`captured_at`, not the time it was fetched. `report` then parses each post with `alert_text.parse`, counts posts per
+format and year, notes the first day each format appears (the table reads as a timeline of PUB's wordings), and lists
+every post to review: no format matched, or one matched with a problem. A new pattern has worked when its posts leave
+that list and its row appears in the table. ingest/onemap.py reuses `latest_versions`.
 """
 
 from __future__ import annotations

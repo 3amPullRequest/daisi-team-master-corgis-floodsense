@@ -14,9 +14,12 @@ from daisi_team_master_corgis_floodsense.ml.scoreboard import score, tick_labels
 from daisi_team_master_corgis_floodsense.ml.split import make_split
 
 # Two months of storms over four areas. PUB alerts only in the two flood-prone ones, and only after heavy storms; NEA
-# forecasts thundery showers from 90 minutes before every storm.
+# forecasts thundery showers from 90 minutes before every storm, and a storm rains 5-20 km away half an hour before it
+# reaches an area. Other storms only pass by, raining 5-20 km away and never on the area, as most do. The weather
+# stations' readings stop on day WEATHER_DAYS, as if their backfill hadn't landed.
 START = pd.Timestamp("2025-03-01")
 DAYS = 60
+WEATHER_DAYS = 40
 TEST_START = START + pd.Timedelta(days=DAYS)
 FLOOD_PRONE = ("Ang Mo Kio", "Bedok")
 AREAS = (*FLOOD_PRONE, "Changi", "Dover")
@@ -28,16 +31,26 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
     rng = np.random.default_rng(seed)
     ticks = pd.date_range(START, TEST_START, freq="5min", inclusive="left")
     frames, alerts = [], []
+    hour = np.asarray(ticks.hour + ticks.minute / 60)
+    day_heat = np.sin(np.pi * (hour - 8) / 12).clip(0)
     for area in AREAS:
         rain = np.zeros(len(ticks))  # mm per 5-minute reading
+        passing = np.zeros(
+            len(ticks)
+        )  # the same, 5-20 km away, of storms that miss the area
         forecast = np.zeros(len(ticks), dtype=int)
         for day in range(DAYS):
-            if rng.random() > 0.4:
-                continue
             first = day * 288 + int(rng.integers(150, 220))  # 12:30 to 18:20
             length = int(rng.integers(6, 18))
             peak = rng.uniform(2, 12)
-            rain[first : first + length] += peak * np.hanning(length + 2)[1:-1]
+            storm = peak * np.hanning(length + 2)[1:-1]
+            kind = rng.random()
+            if kind < 0.6:
+                if kind < 0.3:
+                    passing[first : first + length] += storm
+                    forecast[max(0, first - 18) : first + length] = 4
+                continue
+            rain[first : first + length] += storm
             forecast[max(0, first - 18) : first + length] = 4
             if area in FLOOD_PRONE and peak > 6:
                 at = ticks[first] + pd.Timedelta(minutes=int(rng.integers(20, 45)))
@@ -46,6 +59,11 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
                     alerts.append((area, at + pd.Timedelta(minutes=15), C.FLASH_FLOOD))
         # each window ends READING_LAG_MINUTES (two readings) before its tick
         seen = pd.Series(rain).shift(2, fill_value=0.0)
+        nearby = pd.Series(rain).shift(-6, fill_value=0.0) + pd.Series(passing).shift(
+            2, fill_value=0.0
+        )
+        nearby = nearby.rolling(6, min_periods=1).sum()
+        landed = np.arange(len(ticks)) < WEATHER_DAYS * 288
         frames.append(
             pd.DataFrame(
                 {
@@ -60,6 +78,12 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
                     "rain_gauges": 3,
                     "forecast_rain_class": forecast,
                     "forecast_age_min": 10.0,
+                    "rain_nearby_30min_mm": nearby.round(1),
+                    "rain_upwind_30min_mm": (0.8 * nearby).round(1),
+                    "air_temp_c": np.where(landed, 27 + 4 * day_heat, np.nan),
+                    "rel_humidity_pct": np.where(landed, 85 - 15 * day_heat, np.nan),
+                    "wind_u_kn": np.where(landed, -3.0, np.nan),
+                    "wind_v_kn": np.where(landed, 2.0, np.nan),
                 }
             )
         )
@@ -117,8 +141,15 @@ def test_the_rater_learns_which_areas_flood(fitted):
     pair, _ = fitted
     preds = pair.predict(ROWS)
     warned = preds[preds["tier"] != "Low"]
-    assert set(warned["area"]) <= set(FLOOD_PRONE)
-    quiet = ROWS["rain_60min_mm"].eq(0) & ROWS["forecast_rain_class"].eq(0)
+    # storms hit all four areas alike, so a model blind to the area would warn in the flood-prone two about half the
+    # time. Rain 5-20 km away heralds a storm everywhere, and the regularised rater lets the heaviest through elsewhere
+    # too (16 Oct), so the test is that most warnings land where floods happen, not all.
+    assert warned["area"].isin(FLOOD_PRONE).mean() >= 0.8
+    quiet = (
+        ROWS["rain_60min_mm"].eq(0)
+        & ROWS["forecast_rain_class"].eq(0)
+        & ROWS["rain_nearby_30min_mm"].eq(0)
+    )
     assert (preds.loc[quiet, "tier"] == "Low").all()
     assert (preds.loc[quiet, "p_alert"] == pair.quiet_p).all()
 
@@ -132,9 +163,7 @@ def test_predictions_are_ml_predictions_rows_with_reasons(fitted):
     assert preds.loc[~warned, "reason"].isna().all()
     reasons = preds.loc[warned, "reason"]
     assert reasons.str.contains("mm of rain|NEA forecasts|PUB has often alerted").all()
-    assert (
-        reasons.str.contains("mm of rain").any() and reasons.str.contains("NEA").any()
-    )
+    assert reasons.str.contains("mm of rain").any()
     assert preds["p_alert"].between(0, 1).all()
 
 
@@ -144,6 +173,49 @@ def test_a_row_missing_a_feature_is_not_rated(fitted):
     storm["forecast_rain_class"] = np.nan
     preds = pair.predict(storm)
     assert (preds["tier"] == "Low").all() and preds["p_alert"].isna().all()
+
+
+def test_a_row_missing_only_optional_features_is_rated(fitted):
+    pair, _ = fitted
+    storm = ROWS[ROWS["alert_label"] == 1].head(3).copy()
+    storm[list(C.OPTIONAL_FEATURES)] = np.nan  # a weather outage, no upwind in a calm
+    preds = pair.predict(storm)
+    assert preds["p_alert"].between(0, 1).all()
+    # and the rows without weather (the last weeks) trained the models
+    assert ROWS["air_temp_c"].isna().any()
+    gated.check_recorded(ROWS)
+
+
+def test_predict_ignores_gold_columns_the_models_dont_read(fitted):
+    # gold.area_features rows carry the held-back lightning columns too; a scorer can pass them as they are
+    pair, _ = fitted
+    rows = ROWS.head(500)
+    with_lightning = rows.assign(**{c: 99.0 for c in C.HELD_BACK_FEATURES})
+    pd.testing.assert_frame_equal(pair.predict(with_lightning), pair.predict(rows))
+    assert not set(C.HELD_BACK_FEATURES) & set(gated.INPUTS)
+
+
+def test_risk_only_rises_with_rain_and_the_forecast():
+    assert gated.RISING <= set(gated.INPUTS)
+    assert {*gated.RAIN, *gated.NEARBY_RAIN, "forecast_rain_class"} == gated.RISING
+
+
+def test_reasons_name_rain_further_away():
+    row = {
+        "area": "Bedok",
+        "rain_nearby_30min_mm": 14.2,
+        "rain_upwind_30min_mm": np.float32(9.6),
+    }
+    assert gated._phrase("rain_nearby_30min_mm", row) == (
+        "14 mm of rain 5-20 km away in the last 30 min"
+    )
+    assert gated._phrase("rain_upwind_30min_mm", row) == (
+        "10 mm of rain upwind, 5-20 km away in the last 30 min"
+    )
+    assert (
+        gated._phrase("rain_upwind_30min_mm", {"rain_upwind_30min_mm": np.nan}) is None
+    )
+    assert gated._phrase("air_temp_c", {"air_temp_c": 33.0}) is None
 
 
 def test_save_and_load_predict_the_same(fitted, tmp_path):
@@ -183,6 +255,21 @@ def test_usable_alerts_are_those_the_rows_can_learn_from():
     usable = gated.usable_alerts(ALERTS, rows)
     assert len(usable) and (usable["alert_ts"] < START + pd.Timedelta(days=30)).all()
     assert len(gated.usable_alerts(ALERTS, ROWS)) == len(ALERTS)
+
+
+def test_no_cut_off_warns_the_rows_the_gate_screens_out():
+    # three screened-out rows at the floor, and passed rows calibrated down to it: a cut-off at the floor would warn
+    # every row, as one endless warning that the scoreboard counts as no false alarm
+    rows = pd.DataFrame(
+        {
+            "area": "Bedok",
+            "ts": pd.date_range(START, periods=6, freq="5min"),
+        }
+    )
+    p = np.array([0.01, 0.01, 0.01, 0.01, 0.3, 0.6])
+    passed = np.array([False, False, False, True, True, True])
+    _, _, curve = gated.cut_offs(rows, p, passed, ALERTS.iloc[:0], SPLIT, settings=FAST)
+    assert (curve["medium_p"] > 0.01).all()
 
 
 def test_centered_calibration_keeps_block_levels_and_orders_every_score():

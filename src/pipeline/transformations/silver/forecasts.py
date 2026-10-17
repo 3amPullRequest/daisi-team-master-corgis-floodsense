@@ -4,6 +4,15 @@ API day backfill and the live ticks.
 NEA issues a forecast about every 30 minutes and amends it in between, so a forecast is keyed by its area, its nominal
 issue time and the moment it was published (updated_at). A feature at tick t may only use forecasts with
 updated_at <= t. Like rainfall, Auto CDC keeps the latest fetch of each and merges only new pages.
+
+Two sources feed one table. The API pages list forecast items, each with a valid period and one forecast per area; the
+yearly CSVs have a row per area and issue, with NEA's code. Each is turned into the same shape (area, issued_at,
+updated_at, valid_from, valid_to, forecast, forecast_code, fetched_at, source) by its own view, which drops rows that
+don't parse and flags categories it doesn't know. `_classified` gives every row the ordinal `rain_class` from its
+category text, and NEA's code too where the source has none (the API sends only the text), using
+utilities/forecast_categories.py. The two views then flow into the one streaming table, keyed by area, issue time and
+publication time, with the latest fetch winning, so a page fetched on many ticks, or a file re-read, collapses to a
+single row. Gold's area_forecasts turns the table into "the forecast valid at tick t".
 """
 
 from pyspark import pipelines as dp

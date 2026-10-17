@@ -3,6 +3,15 @@
 The API carries only flash floods and their "subsided" notices (no 90% warnings), and its `description` is the text of
 PUB's Telegram post, so labels/alert_text.py classifies it the same way. Unlike Telegram, it gives PUB's own
 coordinates for the location (a circle), which silver.location_gazetteer uses first.
+
+How it is built. Bronze keeps every page the API ever returned, and a record comes back on every tick until it scrolls
+off the newest page, as well as in the day backfill. The view takes the pages that answered 200, explodes them to
+the 2-minute records and then to the alerts inside each, and keeps one copy per issue time and description, the latest
+fetched. It runs the description through the same parser as Telegram posts, which gives the category (a flash flood, or
+its "subsided" notice, which only the description tells apart), the place and PUB's stamp. `alert_ts` is that stamp
+turned into a moment relative to the issue time, or the issue time when there is none; the location is the parser's,
+or else the API's own area description. Two expectations watch it: the circle must lie in Singapore, and the wording
+must be a known format, so a new phrasing shows up here as a failed expectation.
 """
 
 from pyspark import pipelines as dp

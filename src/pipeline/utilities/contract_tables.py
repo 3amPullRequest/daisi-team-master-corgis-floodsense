@@ -1,5 +1,13 @@
 """Spark schemas for the tables ml/contract.py defines, with the contract's descriptions as column comments. Pure data
-(no Spark), so tests/test_silver_contract.py can check it against the contract."""
+(no Spark), so tests/test_silver_contract.py can check it against the contract.
+
+The contract says what each column of a shared table means and in which order; this file adds the Spark type of each.
+`ddl` joins the two into the `name TYPE COMMENT '...'` string a table is declared with (`schema=` of the pipeline's
+materialized views), so a table is created with exactly the columns, order and descriptions the contract gives, and the
+description a reader sees on a column is the one the models rely on. A column in the contract without a type here fails
+at import, so the two can't drift apart unnoticed. The model rows reuse the area-features types for the features they
+share.
+"""
 
 from daisi_team_master_corgis_floodsense.ml import contract as C
 
@@ -33,6 +41,13 @@ AREA_FEATURES_TYPES = {
     "rain_gauges": "INT",
     "forecast_rain_class": "INT",
     "forecast_age_min": "DOUBLE",
+    "rain_nearby_30min_mm": "DOUBLE",
+    "rain_upwind_30min_mm": "DOUBLE",
+    "air_temp_c": "DOUBLE",
+    "rel_humidity_pct": "DOUBLE",
+    "wind_u_kn": "DOUBLE",
+    "wind_v_kn": "DOUBLE",
+    **{C.lightning_column(km): "INT" for km in C.LIGHTNING_RADII_KM},
 }
 AREA_FEATURES_SCHEMA = ddl(C.AREA_FEATURES_COLUMNS, AREA_FEATURES_TYPES)
 

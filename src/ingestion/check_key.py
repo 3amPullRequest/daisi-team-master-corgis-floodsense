@@ -3,6 +3,10 @@
 data.gov.sg treats a key it doesn't recognise as no key, so this is the only way to tell. Run it after storing a key:
 
     uv run python src/ingestion/check_key.py --profile flood_dev
+
+This file holds no logic of its own. It puts src/ on sys.path and calls `main` of
+daisi_team_master_corgis_floodsense.ingest.keycheck, which counts how many calls one rate-limit window allows and names
+the key's tier from that. The exit status is non-zero when there is no key or data.gov.sg doesn't recognise it.
 """
 
 import inspect

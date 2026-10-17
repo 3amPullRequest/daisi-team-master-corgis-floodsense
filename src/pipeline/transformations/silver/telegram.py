@@ -8,6 +8,20 @@ was seen when the archive took it, not when it was fetched).
 A post no pattern matches is `unmatched`: it never becomes an alert, and it waits in telegram_review. Once a person
 has looked, either a new pattern reads it (a new format), or data/static/telegram_manual_labels.csv labels it, e.g.
 `not_relevant` for an announcement. A manual label wins over the patterns.
+
+How telegram_posts is built. Bronze holds every copy of every post, from each channel scrape, each web-archive capture
+and each live tick. The table first reduces them to one row per message_id, the copy seen latest (an archive capture
+counts from `captured_at`), and counts the copies and the first sighting. It then runs the post through the same parser
+the fetchers use, which gives the category, the matching pattern, any problem, and each location with the moment PUB
+stamped against it (and, for NEA's heavy-rain posts, the regions and the valid window). Last, it joins the hand labels:
+a manual category overrides the parser and clears its problem. `origin` (archive, live or wayback), read from the
+landed file's folder, is kept because gold.label_coverage needs to know which posts show when the channel's newest
+page was read.
+
+telegram_review lists the posts that need a person, with the action that resolves each: an unmatched post needs a new
+format in FORMATS or a manual label, a post with no stamp is usable but worth a look, and a post whose format matched
+but whose location could not be read needs its reader fixed. The expectations on telegram_posts (`format_known`,
+`read_fully`) count those posts without failing the update.
 """
 
 from pyspark import pipelines as dp

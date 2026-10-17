@@ -20,6 +20,23 @@ confirmed counts as a false alarm only if its whole watch was recorded; and miss
 Where features are missing (NEA outages, days not backfilled yet: the model is *blind*), an event counts only if the
 model saw every tick that could have put a warning in force at it, from an hour before PUB's first alert; blind time
 isn't time at risk either. A warning needs no such check: the model saw what it warned on.
+
+In code:
+
+- `tick_labels` is the training label: for each (area, tick), whether an alert of the chosen kinds comes within the
+  horizon, found with an as-of join per area. gold.area_labels computes the same thing in Spark.
+- `alert_events` and `warning_episodes` group alerts into events and warned ticks into episodes, starting a new group
+  whenever the gap between neighbours in an area exceeds the horizon.
+- `score` puts them together. For each event it finds the episode in force when the event happened (`_in_force`, an
+  as-of join), which gives the lead time and whether the model warned before PUB; for each episode it asks whether an
+  alert came while it was in force (`_confirmed`), which makes it a hit or a false alarm; and it then marks events and
+  episodes `judged` or not from the missing and blind ticks. The recorded time left over sets the area-months that
+  rates are per. It returns a `Scoreboard`, which keeps the event table and the episode table.
+- `Scoreboard.metrics` flattens that into numbers for MLflow, twice over: `alert_*` for PUB events of any kind (what
+  Medium is for) and `flood_*` for flash floods (the Round 1 TARGETS). Per kind it gives events judged and unjudged,
+  the share flagged before PUB, the mean lead, PUB's own mean warning, and the mean warning the public would get from
+  whichever of the two came first; then false alarms and warned hours per area-month, and the number and precision of
+  High warnings. Intervals are Wilson for proportions and a bootstrap over whole days for mean warnings.
 """
 
 from __future__ import annotations

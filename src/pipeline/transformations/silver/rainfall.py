@@ -4,6 +4,14 @@ day backfill and the live ticks.
 The same reading lands many times: every live tick re-fetches the last two hours, the daily repair re-pulls the day,
 and a timestamp's gauges can arrive over several ticks. Auto CDC keeps one row per (station_id, ts), the latest
 fetched, and each update merges only the pages that landed since the last one.
+
+Two sources feed one table, each through its own view and its own Auto CDC flow. The API view reads the pages that
+answered 200 (a 404 or an empty page only marks a day as done) and explodes them to one row per gauge and timestamp.
+The CSV view reads the yearly files, which carry one thing the API doesn't: when NEA published each reading
+(`published_at`, from its update timestamp), which is NULL on API rows. Gold needs it, because a reading counts at a
+tick only once NEA had published it. Both views drop readings that don't parse or that are implausible (outside 0-60 mm
+in 5 minutes). The flows order competing copies of a reading by when and from which file they were fetched, so the
+latest fetch wins.
 """
 
 from pyspark import pipelines as dp

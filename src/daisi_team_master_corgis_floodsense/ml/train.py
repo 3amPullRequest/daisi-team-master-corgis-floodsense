@@ -17,6 +17,25 @@ alarms (its Medium cut-off is held to the rule's false-alarm rate). The pair is 
 
 With --score-test true it also scores the test split, once, for both models: metrics with 95% CIs, the event-by-event
 tables, and the test predictions in ml.predictions. It refuses while the test's features haven't landed.
+
+The order of work in `main`:
+
+1. Load. The training rows come into pandas compactly (`load_rows`: area as a category, features as float32, labels as
+   int8) so ten million of them fit on a serverless driver. The alerts, the ticks with missing labels and the ticks
+   with missing features come with them, and so does a coverage table of how much of each split the models can use.
+2. Split. `make_split` cuts the development period into folds from the alerts the rows can actually learn from
+   (`gated.usable_alerts`), so no fold is made of days without rows.
+3. Fit the rule first. Its false-alarm rate sets the budget the pair's Medium cut-off may use, so that the comparison
+   asks for more lead time at no more false alarms.
+4. Fit the pair, once for each gate recall asked for, each a nested MLflow run scored out of fold by the same
+   scoreboard as the rule. The fit that flags the most events before PUB wins, then the longer lead, then fewer false
+   alarms (`_rank`).
+5. Judge and register. The verdict is logged, the winner is logged as a pyfunc model (`log_model`, with serving.py and
+   this package's source) and, unless --model is empty, registered. A registered pair gets the challenger alias, and the
+   champion alias too if it beats the rule.
+6. The test, only on request. `check_test_coverage` refuses before any fitting if too little of the test has features.
+   `score_test` writes the predictions to ml.predictions before it logs a single test metric, so that if the write
+   fails nobody has seen the test, and the rerun is still the first look.
 """
 
 from __future__ import annotations
@@ -117,6 +136,14 @@ def main(argv: list[str] | None = None) -> int:
         mlflow.log_table(_dated(split.summary(usable)), "split_summary.json")
 
         dev = gated.development_rows(rows, split)
+        inputs = input_coverage(dev)
+        mlflow.log_table(inputs, "input_coverage.json")
+        sparse = inputs.loc[inputs["known_share"] < 0.5, "feature"].tolist()
+        if sparse:
+            log.warning(
+                "known for under half the development rows: %s; has their source landed?",
+                ", ".join(sparse),
+            )
         judge = {
             "alerts": alerts,
             "start": split.start,
@@ -284,6 +311,23 @@ def load_coverage(spark, gold: str) -> pd.DataFrame:
         GROUP BY ALL ORDER BY ALL
         """
     ).toPandas()
+
+
+def input_coverage(rows: pd.DataFrame) -> pd.DataFrame:
+    """Per model feature, the share of rows where it is known, among all rows and among those an alert followed. The
+    optional ones may be null (a feed outage, a backfill that hasn't landed), and one that is mostly missing would look
+    unimportant to the models for want of data."""
+    alert = rows["alert_label"] == 1
+    return pd.DataFrame(
+        {
+            "feature": list(C.MODEL_FEATURES),
+            "required": [c in C.REQUIRED_FEATURES for c in C.MODEL_FEATURES],
+            "known_share": [float(rows[c].notna().mean()) for c in C.MODEL_FEATURES],
+            "known_share_alert_rows": [
+                float(rows.loc[alert, c].notna().mean()) for c in C.MODEL_FEATURES
+            ],
+        }
+    )
 
 
 def usable_share(coverage: pd.DataFrame, split: str) -> float:

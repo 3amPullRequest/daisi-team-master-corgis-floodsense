@@ -7,6 +7,29 @@ PUB has reworded its posts several times (DEVELOPER_NOTES "Things that bit us"),
 own pattern, named after the format's marker. A post matches one of them or it is `unmatched`: nothing is guessed. An
 unmatched post never becomes a label. Silver lists it for review (silver.telegram_review) with a hint of what it looks
 like, so a new format shows up the first time PUB uses it.
+
+A post is read in four steps:
+
+1. Classify. `parse` normalises the text and tries FORMATS in order. A Format has a headline regex that must match at
+   the start of the text, and a reader for the rest. The first headline that matches decides the category and the
+   pattern. A post that matches none is `unmatched`, with a `hint` (from loose keyword clues) of the category it
+   resembles, to steer whoever reviews it. Service messages and empty posts are `not_relevant`.
+2. Read the places. The format's reader lifts out the locations. A list format (the 2021-2023 warnings and the older
+   flash-flood list) has one bullet line per location, each ending in its own stamp ("• Harper Rd [10:10 hours]"),
+   and `_segments` splits the text at the stamps so that each stamp ends the location before it. Other formats name
+   one place in a sentence, and the reader cuts it from the lead phrase to the end of that sentence. NEA's heavy-rain
+   posts have regions, a valid window and an issue stamp in place of locations. The reader never guesses: with no
+   location it records a `problem` (NO_LOCATION), and with a location that has no time, another (NO_STAMP), and
+   silver sends a post with a problem to review.
+3. Date the stamps. A stamp is only 'HH:MM' in SGT. `stamp_time` turns it into a moment from the posting time: the day
+   of posting, or the day before when that would be later than the post by more than CLOCK_SKEW, as when a post just
+   after midnight is about an alert just before it. `window_times` does the same for a heavy-rain window, placing it so
+   that it starts within 12 hours of being issued and ends after it starts.
+4. Hand it to Spark. `parse_row` is `parse` plus those conversions as a plain dict matching ROW_SCHEMA, which silver
+   wraps as a UDF. This module uses only the standard library and the contract, so it can travel to executors by value
+   and the fetchers and tests read posts exactly as silver does.
+
+To support a new format, add a Format to FORMATS, in the order of the others, with a real post as a test fixture.
 """
 
 from __future__ import annotations

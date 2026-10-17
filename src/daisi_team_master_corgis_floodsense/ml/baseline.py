@@ -3,6 +3,25 @@
 It is the bar the gated LightGBM has to clear on lead time and false alarms (Round 1 proposal). Its training curve
 also shows where the gate can go: the highest threshold that still flags nearly every training alert, and the share
 of area-ticks that threshold would pass to the second model.
+
+A `RainfallRule` is one window (15, 30 or 60 minutes of the largest gauge total near the area) and two thresholds,
+Medium from `medium_mm` and High from `high_mm`. It has no probability and no model, only a comparison, and a missing
+reading counts as no rain. `predict` writes ml.predictions rows with the reason the app shows ("N mm of rain within
+5 km in the last W min"), the same kind of explanation the gated pair gives.
+
+`fit` chooses the rule by a grid search on the training window, judging every candidate the way the scoreboard judges
+any model:
+
+- Every window with every threshold from 2.5 to 120 mm is tried as a Medium rule, by running scoreboard.score on the
+  ticks it would warn. Each candidate's share of PUB events flagged before PUB, mean lead time, false alarms per
+  area-month, warned hours and share of ticks warned are kept as the curve `fit` also returns, for logging.
+- Medium is the candidate that flags the most events within the false-alarm budget; ties go to the longer lead, then to
+  fewer warned hours.
+- High is the lowest higher threshold, on that window, whose High warnings are followed by a flash flood often enough
+  (`min_high_precision`, a third by the Round 1 target). If none gets there the rule never says High.
+
+Ticks whose labels or features were never recorded are passed in (`missing`, `blind`) and left out of the judging, as
+for the pair, so the two are compared on the same ticks.
 """
 
 from __future__ import annotations

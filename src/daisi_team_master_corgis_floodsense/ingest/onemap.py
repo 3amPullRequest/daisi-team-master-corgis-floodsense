@@ -9,6 +9,21 @@ OneMap's search answers without a token, but (Oct 2026) with only its top result
 about one request every 10 seconds (it answers faster ones with HTTP 429). The gazetteer uses only the top result.
 Flash-flood locations go first, then the most recently alerted, so a run that stops early has placed the labels that
 matter most.
+
+A run works in four steps:
+
+1. Read back what earlier runs landed under `onemap_search/`: which queries were asked for each location, and which
+   locations already have an answer `accepted` (a point inside Singapore whose road, name or building is the place the
+   query names, by the same name score the gazetteer uses). Those are done.
+2. Read the landed Telegram posts, keep the latest version of each, parse it with labels/alert_text, and collect every
+   location that a warning or flash-flood post names (`alert_locations`). Locations are keyed by
+   `locations.location_key`, so the spellings of one place are searched once.
+3. For each place still unplaced, take the `locations.search_queries` not yet asked, and order the places flash floods
+   first, then by how recently they were alerted.
+4. Search them one at a time at the rate OneMap allows, best query first, and stop at a place's first accepted answer.
+   Answers are landed in files of BATCH locations, so a run that is killed keeps most of its work, and a location
+   whose request fails is left for the next run. Landing refused answers too is what stops a re-run asking again, and
+   what lets better `search_queries` retry only the places that missed.
 """
 
 from __future__ import annotations

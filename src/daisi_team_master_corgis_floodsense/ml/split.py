@@ -21,6 +21,15 @@ cut-offs. None of them may look at the test, so the development period is cut ag
 The same embargo separates development from the test: development ends `embargo_days` before the test, so nothing
 fitted or tuned has a label that reads a test alert. The test ends at contract.SPLIT_END, the last midnight of the
 label snapshot the split was computed on.
+
+In code: `temporal_split` is run once, by hand, to find the test's start from the recorded ticks (its result is frozen
+in contract.TEST_START). `make_split` then builds the `Split` each run uses: it takes the development period up to the
+embargo before the test, counts the SGT days that hold an alert, and cuts the period into `folds` blocks holding about
+the same number of them, each cut in the dry stretch between two alert days. A `Fold` gives masks over any timestamp
+column, `train` (inside the development period, and further than the embargo from the block) and `valid` (the block),
+and `Split.cv` returns them as the (train, valid) positions lightgbm.cv takes. `Split.dev` and `Split.test` mask the
+rows for the final refit and for the single look at the test, and `Split.summary` tabulates days, alert days and flood
+days on each side of every fold, which train.py logs with every run.
 """
 
 from __future__ import annotations

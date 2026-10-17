@@ -53,13 +53,41 @@ def test_gold_schemas_are_the_contract():
 
 
 def test_model_rows_hold_every_model_feature_and_both_labels():
-    assert set(C.MODEL_FEATURES) == set(C.AREA_FEATURES_COLUMNS) - {"area", "ts"}
+    # every gold feature column is a model feature, except those held back (lightning, 16 Oct)
+    held_back = set(C.HELD_BACK_FEATURES)
+    assert held_back <= set(C.AREA_FEATURES_COLUMNS)
+    assert (
+        set(C.MODEL_FEATURES)
+        == set(C.AREA_FEATURES_COLUMNS) - {"area", "ts"} - held_back
+    )
     assert {*C.MODEL_FEATURES, "alert_label", "flood_label", "split"} <= set(
         C.MODEL_ROWS_COLUMNS
     )
+    assert not held_back & set(C.MODEL_ROWS_COLUMNS)
     # the forecast's rain classes are the ones silver assigns
     assert {rain for _, rain in FORECASTS.values()} == set(C.RAIN_CLASSES)
     assert set(C.FEATURE_MISSING_REASONS) == {C.RAIN_GAP, C.FORECAST_GAP}
+
+
+def test_required_and_optional_features_split_the_model_features():
+    assert set(C.REQUIRED_FEATURES) | set(C.OPTIONAL_FEATURES) == set(C.MODEL_FEATURES)
+    assert not set(C.REQUIRED_FEATURES) & set(C.OPTIONAL_FEATURES)
+    # the rule reads only required columns, and gold.feature_ticks covers exactly those
+    assert {C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES} <= set(
+        C.REQUIRED_FEATURES
+    )
+    # the nearby rain reads a window gold keeps per gauge, from where the area's own gauges end
+    assert C.NEARBY_RAIN_MINUTES in C.RAIN_WINDOWS_MINUTES
+    assert C.NEARBY_RAIN_KM[0] == C.GAUGE_RADIUS_KM < C.NEARBY_RAIN_KM[1]
+    # windows that start on a tick, and lightning records that tile them
+    assert C.WEATHER_MINUTES % C.TICK_MINUTES == 0
+    assert C.LIGHTNING_MINUTES % C.TICK_MINUTES == 0
+    assert (
+        C.LIGHTNING_RECORDS_PER_WINDOW * C.LIGHTNING_RECORD_MINUTES
+        == C.LIGHTNING_MINUTES
+    )
+    # a source that starts after the labels can only be an optional feature, never a required one
+    assert C.LIGHTNING_START > C.LABELS_START
 
 
 def test_split_and_label_window_constants_hold_together():

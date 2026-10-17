@@ -15,7 +15,8 @@ Fitting, on the development period of split.make_split (blocked day-folds, an em
    scores set its threshold: the highest that still passes `gate_recall` of the rows an alert followed. A third of
    those had no rain within 5 km yet (gold, 15 Oct): the early ticks of a storm, which only the forecast and the hour
    tell from a quiet afternoon. So the gate reads every input the rater does.
-2. Rater: LightGBM on the rows the out-of-fold gate passed, risk rising with rain and with the forecast.
+2. Rater: LightGBM on the rows the out-of-fold gate passed, risk rising with rain (near the area and around it) and
+   with the forecast.
 3. Calibration: centered isotonic regression of the label on the rater's pooled out-of-fold scores. Rows the gate
    screens out get the alert rate of the screened-out rows.
 4. Cut-offs, on the pooled out-of-fold probabilities, judged by scoreboard.score over the development period as
@@ -24,6 +25,25 @@ Fitting, on the development period of split.make_split (blocked day-folds, an em
 5. Both models are refitted on the whole development period, with the rounds the folds chose.
 
 The test split is never read here.
+
+Scoring a row, which is what a saved pair does (`GatedPair.p_alert`, `predict`):
+
+- A row missing a required feature isn't rated: its p_alert is NaN and its tier Low. A missing optional feature
+  (a weather outage, no upwind in a calm) is passed on as missing, which LightGBM reads as such.
+- The gate scores every other row, and those at or above its threshold go on to the rater. Its raw score is turned into
+  a probability by the calibration, never below the alert rate of the rows the gate screens out. The rows the gate
+  stops get that rate (`quiet_p`).
+- `tiers` turns the probability into Low, Medium or High with the two cut-offs, and `reasons` gives each warned row a
+  plain-English reason for the app: the two inputs that raised the rater's score most (its SHAP contributions), in
+  words a resident can act on, or the weather at hand when no single input stands out.
+- `save` and `load` keep the pair as two LightGBM model files and a JSON of everything else, and refuse to load a pair
+  saved for different inputs.
+
+Some choices that shape the models: both are small and heavily regularised, because the alert days to learn from are
+few (about 160 in training); the trees are constrained so that the chance of an alert can only rise with the rain, near
+the area and around it, and the forecast class (`RISING`); the quiet rows are subsampled and weighted back up (`_quiet_sample`), so
+ten million rows train quickly without biasing the totals; and every cut-off must lie above the probability of the
+screened-out rows, so that a cut-off cannot become "warn everywhere".
 """
 
 from __future__ import annotations
@@ -44,7 +64,9 @@ from .split import Split, _sgt
 AREA, HOUR = "area", "hour_sgt"
 INPUTS = (AREA, HOUR, *C.MODEL_FEATURES)  # what both models read, in this order
 RAIN = tuple(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES)
-RISING = {*RAIN, "forecast_rain_class"}  # the alert chance may only rise with these
+NEARBY_RAIN = ("rain_nearby_30min_mm", "rain_upwind_30min_mm")
+# the alert chance may only rise with these
+RISING = {*RAIN, "forecast_rain_class", *NEARBY_RAIN}
 
 # Few events (about 160 alert days in training), so both models are small and heavily regularised.
 GATE_PARAMS = {
@@ -129,9 +151,10 @@ class GatedPair:
         return f"gated_lightgbm M>={self.medium_p:.3g} H>={self.high_p:.3g}"
 
     def p_alert(self, frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-        """(passed, p_alert) per row. A row missing a model feature isn't rated: p_alert is NaN, and its tier Low."""
+        """(passed, p_alert) per row. A row missing a required feature isn't rated: p_alert is NaN, and its tier Low.
+        A missing optional feature (a weather outage, no upwind in a calm) is read as missing."""
         X = design(frame, self.areas)
-        known = X[list(C.MODEL_FEATURES)].notna().all(axis=1).to_numpy()
+        known = X[list(C.REQUIRED_FEATURES)].notna().all(axis=1).to_numpy()
         passed = np.zeros(len(X), dtype=bool)
         if known.any():
             passed[known] = self.gate.predict(X[known]) >= self.gate_threshold
@@ -175,7 +198,9 @@ class GatedPair:
             phrases = [_phrase(INPUTS[i], row) for i in ranked if contribution[i] > 0]
             phrases = [p for p in phrases if p][:2]
             # nothing raised the score on its own (inputs only act together): name the weather anyway
-            weather = (_phrase(c, row) for c in (*RAIN, "forecast_rain_class"))
+            weather = (
+                _phrase(c, row) for c in (*RAIN, *NEARBY_RAIN, "forecast_rain_class")
+            )
             texts.append(
                 "; ".join(phrases)
                 or next(
@@ -396,8 +421,10 @@ def development_rows(rows: pd.DataFrame, split: Split) -> pd.DataFrame:
 
 
 def check_recorded(rows: pd.DataFrame) -> None:
-    """Raise if a row has a missing label or feature: it would come from a missing interval."""
-    unknown = rows[["alert_label", "flood_label", *C.MODEL_FEATURES]].isna().any(axis=1)
+    """Raise if a row has a missing label or required feature: it would come from a missing interval."""
+    unknown = (
+        rows[["alert_label", "flood_label", *C.REQUIRED_FEATURES]].isna().any(axis=1)
+    )
     if unknown.any():
         first = rows.loc[unknown, [AREA, "ts"]].iloc[0].to_dict()
         raise ValueError(
@@ -443,8 +470,17 @@ def cut_offs(
     Medium: the cut-off that flags the most PUB alert events before PUB within `max_false_alarms` per area-month; ties
     go to the longer mean lead, then to fewer warned hours. High: the lowest higher cut-off whose High warnings are
     followed by a flash flood at least `min_high_precision` of the time, else never. Returns both and the Medium curve.
+
+    Every cut-off is above the probability of the rows the gate screens out: calibration floors the passed rows at it,
+    and a cut-off there would warn every row, which the scoreboard can't fault (one endless warning per area holds
+    every alert, so it is never a false alarm).
     """
-    candidates = _candidates(p[passed], settings.cut_off_candidates)
+    screened_out = p[~passed].max() if (~passed).any() else -math.inf
+    candidates = [
+        c
+        for c in _candidates(p[passed], settings.cut_off_candidates)
+        if c > screened_out
+    ]
     frame = rows[[AREA, "ts"]]
 
     def metrics(medium: float, high: float = math.inf) -> dict[str, float]:
@@ -599,8 +635,20 @@ def _phrase(name: str, row: dict) -> str | None:
     if name in RAIN and value is not None and value >= 1:
         minutes = name.removeprefix("rain_").removesuffix("min_mm")
         return f"{value:.0f} mm of rain within {C.GAUGE_RADIUS_KM:g} km in the last {minutes} min"
+    if name in NEARBY_RAIN and _known(value) and value >= 1:
+        near, far = C.NEARBY_RAIN_KM
+        where = "upwind, " if name == "rain_upwind_30min_mm" else ""
+        return (
+            f"{value:.0f} mm of rain {where}{near:g}-{far:g} km away in the last "
+            f"{C.NEARBY_RAIN_MINUTES} min"
+        )
     if name == "forecast_rain_class" and value:
         return f"NEA forecasts {C.RAIN_CLASSES[int(value)]} here"
     if name == AREA:
         return f"PUB has often alerted in {row[AREA]} in weather like this"
     return None
+
+
+def _known(value) -> bool:
+    """A value of a row that isn't null: None from Spark, NaN (of any float width) from pandas."""
+    return value is not None and not pd.isna(value)
