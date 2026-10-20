@@ -275,10 +275,10 @@ governance["Governance (Stretch)"]
 ---
 
 #### Labels
-| Response | Type | Live Dataset | Historical Equivalent | Time Range | Time Interval | Live Source | Historical Source  | Remarks |
-|----------|----------|----------|----------|----------|----------|----------|----------|----------|
-| Flash Floods| Boolean | PUB Flood Alerts (Live API)   | Same | May 22, 2025 to Present | Minutes | [PUB](https://data.gov.sg/datasets/d_f1404e08587ce555b9ea3f565e2eb9a3/view) | NA | [See Appendix](#flash-floods-live-api) |
-|Flash Floods & Water Level Sensor alerts (inferred to trigger at 90% water level) | Boolean | PUB Flood Alerts (Telegram)   | Same   | November 17, 2021 to Present, with gaps | 1 Minute for Training, 5 Minutes for Live | [Telegram PUB Flood Alerts](https://t.me/s/pubfloodalerts?before=1632)   | Wayback Machine captures of `t.me/sgflood` (until 14 Nov 2023) and `t.me/pubfloodalerts` | [See Appendix](#flash-floods--water-level-sensor-alerts) |
+| Response | Type | Live Dataset | Historical Equivalent | Time Range | Time Interval | Live Source | Historical Source | Remarks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Flash Floods | Boolean | PUB Flood Alerts (Live API) | Same | May 22, 2025 to Present | Minutes | [PUB](https://data.gov.sg/datasets/d_f1404e08587ce555b9ea3f565e2eb9a3/view) | NA | [See Appendix](#flash-floods-live-api) |
+| Flash Floods & Water Level Sensor alerts (inferred to trigger at 90% water level) | Boolean | PUB Flood Alerts (Telegram) | Same | November 17, 2021 to Present, with gaps | 1 Minute for Training, 5 Minutes for Live | [Telegram PUB Flood Alerts](https://t.me/s/pubfloodalerts?before=1632) | Wayback Machine captures of `t.me/sgflood` (until 14 Nov 2023) and `t.me/pubfloodalerts` | [See Appendix](#flash-floods--water-level-sensor-alerts) |
 
 
 
