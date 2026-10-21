@@ -629,6 +629,8 @@ SELECT * FROM flood_dev.dev_<you>_gold.model_rows WHERE split = 'train';
 -- the ticks to pass as scoreboard.score(..., missing=..., blind=...) and baseline.fit(...)
 SELECT ts FROM flood_dev.dev_<you>_gold.label_ticks WHERE label_window = 'missing';
 SELECT ts FROM flood_dev.dev_<you>_gold.feature_ticks WHERE feature_window = 'missing';
+What the tide adds: `flood-train` refits the chosen pair without each group in `--compare-without` (job parameter `compare_without`, default `tide`; groups in `contract.FEATURE_GROUPS`) and logs the comparison to the run (`without_tide_comparison.json`, `without_tide_*` metrics; `ml/compare.py`). Until the workspace is reachable, `explorations/tide_ablation_local.py` runs the same comparison on landed files with one island-wide area: on 21 Oct, over 2021–2024, the tide gave a small, consistent edge (ROC-AUC +0.0004; at a 5% warning budget 98.9% of 89 events flagged before PUB against 95.5%, McNemar p ≥ 0.125). Alerts were more common at low tide, so the `RISING` constraint on `tide_height_m` should go. Full write-up in `DEMO_DAY_NOTES.md`.
+
 ```
 
 Don't train on `area_labels` rows with `alert_label IS NOT NULL`. Inside a missing window that keeps the alerts that did come back (label 1) but none of the quiet ticks (null), so every lost post would raise the alert rate around it. `model_rows` keeps recorded windows only, alerts and quiet ticks alike, and its expectations fail the update if a missing one gets in.

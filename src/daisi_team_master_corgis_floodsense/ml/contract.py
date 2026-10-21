@@ -109,6 +109,12 @@ AREA_FEATURES_COLUMNS = {
 }
 # The columns a model reads, all of them known at the tick. The gated pair also reads the area and the SGT hour.
 MODEL_FEATURES = tuple(c for c in AREA_FEATURES_COLUMNS if c not in ("area", "ts"))
+# Model features by source, so flood-train can fit the pair without a group and measure what it adds.
+FEATURE_GROUPS = {
+    "rain": (*(rain_column(w) for w in RAIN_WINDOWS_MINUTES), "rain_gauges"),
+    "forecast": ("forecast_rain_class", "forecast_age_min"),
+    "tide": ("tide_height_m", "minutes_to_high_tide"),
+}
 
 # Whether a tick's label is known. Its label reads PUB alerts stamped in (ts, ts + HORIZON]; PUB posts an alert at
 # most 35 min after its stamp (Telegram 2021-2026; rounded up here), and the post parser accepts a stamp up to

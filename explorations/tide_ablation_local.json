@@ -1,0 +1,483 @@
+{
+ "rows": 220074,
+ "alert_rows": 1460,
+ "alerts": 561,
+ "usable_alerts": 417,
+ "development": "2021-10-27 to 2024-12-31",
+ "missing_label_days": 318.2708333333333,
+ "blind_days": 108.57291666666667,
+ "alert_rate": 0.00663413215554768,
+ "alert_rate_by_tide_quartile": {
+  "(-0.197, 1.236]": 0.01012377542303568,
+  "(1.236, 1.838]": 0.005870805918063179,
+  "(1.838, 2.32]": 0.005743574830055618,
+  "(2.32, 3.377]": 0.004798342390810447
+ },
+ "alert_rate_by_tide_quartile_12_to_20h": {
+  "(0.037, 1.202]": 0.023031988873435327,
+  "(1.202, 1.766]": 0.010013908205841447,
+  "(1.766, 2.254]": 0.010849004117057973,
+  "(2.254, 3.377]": 0.014186369958275382
+ },
+ "results": [
+  {
+   "seed": 0,
+   "ranking": {
+    "with": {
+     "brier": 0.005767113952981203,
+     "log_loss": 0.024541998028898976,
+     "average_precision": 0.19660905945580012,
+     "roc_auc": 0.9278502747468201,
+     "base_rate": 0.006642462624773656,
+     "gate_pass_share": 0.08755766658477329
+    },
+    "without": {
+     "brier": 0.005807061639987988,
+     "log_loss": 0.024661246803721552,
+     "average_precision": 0.185162308748078,
+     "roc_auc": 0.9276043242367586,
+     "base_rate": 0.006642462624773656,
+     "gate_pass_share": 0.08045114150265244
+    }
+   },
+   "matched": {
+    "with": {
+     "0.02": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.8202247191011236,
+      "alert_mean_lead_min": 38.59550561797753,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 0.8,
+      "warnings": 448,
+      "false_alarms_per_area_month": 14.517074768651216,
+      "warned_hours_per_area_month": 33.74355772118036
+     },
+     "0.05": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.9887640449438202,
+      "alert_mean_lead_min": 78.28089887640449,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 660,
+      "false_alarms_per_area_month": 22.613135697322086,
+      "warned_hours_per_area_month": 65.32018944667377
+     },
+     "0.1": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 1.0,
+      "alert_mean_lead_min": 122.97752808988764,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 832,
+      "false_alarms_per_area_month": 29.47285234624519,
+      "warned_hours_per_area_month": 109.98478830562607
+     }
+    },
+    "without": {
+     "0.02": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.8314606741573034,
+      "alert_mean_lead_min": 32.348314606741575,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 0.8,
+      "warnings": 454,
+      "false_alarms_per_area_month": 14.596838915731718,
+      "warned_hours_per_area_month": 33.866527447929464
+     },
+     "0.05": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.9662921348314607,
+      "alert_mean_lead_min": 81.04494382022472,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 660,
+      "false_alarms_per_area_month": 22.653017770862338,
+      "warned_hours_per_area_month": 65.39995359375426
+     },
+     "0.1": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 1.0,
+      "alert_mean_lead_min": 117.92134831460675,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 800,
+      "false_alarms_per_area_month": 28.19662599295717,
+      "warned_hours_per_area_month": 109.15391177353752
+     }
+    }
+   },
+   "paired": {
+    "alert_events_paired": 89,
+    "alert_flagged_both": 86,
+    "alert_flagged_only_with": 2,
+    "alert_flagged_only_without": 0,
+    "alert_mcnemar_p": 0.5,
+    "alert_lead_difference_min": -2.764044943820225,
+    "alert_lead_difference_min_lo": -7.874137931034483,
+    "alert_lead_difference_min_hi": 1.8426966292134832
+   },
+   "tide_gain_share": {
+    "gate_gain_share": 0.05573885692449902,
+    "rater_gain_share": 0.1798940144334994
+   },
+   "importance_with": [
+    {
+     "input": "rain_15min_mm",
+     "gate_gain": 36135.64671385288,
+     "rater_gain": 13127.831776738167
+    },
+    {
+     "input": "hour_sgt",
+     "gate_gain": 6825.0317245312035,
+     "rater_gain": 6021.844321012497
+    },
+    {
+     "input": "minutes_to_high_tide",
+     "gate_gain": 4634.507191687822,
+     "rater_gain": 5746.2198313474655
+    },
+    {
+     "input": "rain_gauges",
+     "gate_gain": 5589.749276280403,
+     "rater_gain": 4004.327693939209
+    },
+    {
+     "input": "forecast_rain_class",
+     "gate_gain": 35953.08601427078,
+     "rater_gain": 2732.9020652770996
+    },
+    {
+     "input": "rain_30min_mm",
+     "gate_gain": 218.55571258068085,
+     "rater_gain": 314.7078468799591
+    },
+    {
+     "input": "rain_60min_mm",
+     "gate_gain": 159.56974117830396,
+     "rater_gain": 267.7242019176483
+    },
+    {
+     "input": "forecast_age_min",
+     "gate_gain": 173.39337837696075,
+     "rater_gain": 98.52069634199142
+    },
+    {
+     "input": "tide_height_m",
+     "gate_gain": 386.21226224303246,
+     "rater_gain": 81.56197118759155
+    },
+    {
+     "input": "area",
+     "gate_gain": 0.0,
+     "rater_gain": 0.0
+    }
+   ]
+  },
+  {
+   "seed": 1,
+   "ranking": {
+    "with": {
+     "brier": 0.0058163141088032125,
+     "log_loss": 0.02466434098943903,
+     "average_precision": 0.18128677544760244,
+     "roc_auc": 0.9278448853398972,
+     "base_rate": 0.006642462624773656,
+     "gate_pass_share": 0.08382696839825658
+    },
+    "without": {
+     "brier": 0.005798865118567401,
+     "log_loss": 0.024707082679389158,
+     "average_precision": 0.18417398959616155,
+     "roc_auc": 0.9272101979750637,
+     "base_rate": 0.006642462624773656,
+     "gate_pass_share": 0.08140656420895549
+    }
+   },
+   "matched": {
+    "with": {
+     "0.02": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.8426966292134831,
+      "alert_mean_lead_min": 40.20224719101124,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 0.8,
+      "warnings": 462,
+      "false_alarms_per_area_month": 14.995659651134224,
+      "warned_hours_per_area_month": 34.305230256872214
+     },
+     "0.05": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.9887640449438202,
+      "alert_mean_lead_min": 83.67415730337079,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 664,
+      "false_alarms_per_area_month": 22.77266399148309,
+      "warned_hours_per_area_month": 65.91177353752082
+     },
+     "0.1": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 1.0,
+      "alert_mean_lead_min": 121.01123595505618,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 818,
+      "false_alarms_per_area_month": 28.91450331668168,
+      "warned_hours_per_area_month": 109.84852455436356
+     }
+    },
+    "without": {
+     "0.02": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.7752808988764045,
+      "alert_mean_lead_min": 35.26966292134831,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 0.8,
+      "warnings": 446,
+      "false_alarms_per_area_month": 14.477192695110965,
+      "warned_hours_per_area_month": 33.587352933147706
+     },
+     "0.05": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.9438202247191011,
+      "alert_mean_lead_min": 80.40449438202248,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 651,
+      "false_alarms_per_area_month": 22.33396118254033,
+      "warned_hours_per_area_month": 65.34013048344389
+     },
+     "0.1": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 1.0,
+      "alert_mean_lead_min": 123.93258426966293,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 800,
+      "false_alarms_per_area_month": 28.19662599295717,
+      "warned_hours_per_area_month": 110.74919471514754
+     }
+    }
+   },
+   "paired": {
+    "alert_events_paired": 89,
+    "alert_flagged_both": 84,
+    "alert_flagged_only_with": 4,
+    "alert_flagged_only_without": 0,
+    "alert_mcnemar_p": 0.125,
+    "alert_lead_difference_min": 3.269662921348315,
+    "alert_lead_difference_min_lo": -4.171022727272728,
+    "alert_lead_difference_min_hi": 12.426218443197744
+   },
+   "tide_gain_share": {
+    "gate_gain_share": 0.06912959105596224,
+    "rater_gain_share": 0.140289786756018
+   },
+   "importance_with": [
+    {
+     "input": "rain_15min_mm",
+     "gate_gain": 36482.70230424404,
+     "rater_gain": 13002.869572162628
+    },
+    {
+     "input": "hour_sgt",
+     "gate_gain": 8238.273975327611,
+     "rater_gain": 4248.365536808968
+    },
+    {
+     "input": "rain_gauges",
+     "gate_gain": 5686.839319825172,
+     "rater_gain": 3902.1412864923477
+    },
+    {
+     "input": "minutes_to_high_tide",
+     "gate_gain": 5658.575174957514,
+     "rater_gain": 3777.587333858013
+    },
+    {
+     "input": "forecast_rain_class",
+     "gate_gain": 33298.600756406784,
+     "rater_gain": 2240.3113026618958
+    },
+    {
+     "input": "rain_30min_mm",
+     "gate_gain": 758.1838513612747,
+     "rater_gain": 443.417405128479
+    },
+    {
+     "input": "tide_height_m",
+     "gate_gain": 740.814260840416,
+     "rater_gain": 137.08117842674255
+    },
+    {
+     "input": "rain_60min_mm",
+     "gate_gain": 928.4364359163228,
+     "rater_gain": 79.56591987609863
+    },
+    {
+     "input": "forecast_age_min",
+     "gate_gain": 778.4880267381668,
+     "rater_gain": 72.81944012641907
+    },
+    {
+     "input": "area",
+     "gate_gain": 0.0,
+     "rater_gain": 0.0
+    }
+   ]
+  },
+  {
+   "seed": 2,
+   "ranking": {
+    "with": {
+     "brier": 0.0058070439132212465,
+     "log_loss": 0.02465406538389345,
+     "average_precision": 0.18714889849275496,
+     "roc_auc": 0.9279907349883685,
+     "base_rate": 0.006642462624773656,
+     "gate_pass_share": 0.08455490950782081
+    },
+    "without": {
+     "brier": 0.005816525727273903,
+     "log_loss": 0.02477425002798157,
+     "average_precision": 0.18391809482435817,
+     "roc_auc": 0.9275614301415539,
+     "base_rate": 0.006642462624773656,
+     "gate_pass_share": 0.08431377901527766
+    }
+   },
+   "matched": {
+    "with": {
+     "0.02": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.8314606741573034,
+      "alert_mean_lead_min": 35.640449438202246,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 0.8,
+      "warnings": 448,
+      "false_alarms_per_area_month": 14.437310621570715,
+      "warned_hours_per_area_month": 33.39126607157481
+     },
+     "0.05": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.9887640449438202,
+      "alert_mean_lead_min": 80.75280898876404,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 656,
+      "false_alarms_per_area_month": 22.453607403161083,
+      "warned_hours_per_area_month": 65.44980618567958
+     },
+     "0.1": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 1.0,
+      "alert_mean_lead_min": 119.8314606741573,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 799,
+      "false_alarms_per_area_month": 28.15674391941692,
+      "warned_hours_per_area_month": 109.16388229192258
+     }
+    },
+    "without": {
+     "0.02": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.8089887640449438,
+      "alert_mean_lead_min": 35.12359550561798,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 0.8,
+      "warnings": 437,
+      "false_alarms_per_area_month": 14.03848988616821,
+      "warned_hours_per_area_month": 33.08550350776623
+     },
+     "0.05": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 0.9550561797752809,
+      "alert_mean_lead_min": 81.12359550561797,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 645,
+      "false_alarms_per_area_month": 22.09466874129883,
+      "warned_hours_per_area_month": 65.05763246253377
+     },
+     "0.1": {
+      "alert_events": 89,
+      "alert_flagged_before_pub": 1.0,
+      "alert_mean_lead_min": 120.1685393258427,
+      "flood_events": 5,
+      "flood_flagged_before_pub": 1.0,
+      "warnings": 809,
+      "false_alarms_per_area_month": 28.555564654819424,
+      "warned_hours_per_area_month": 109.85517156662026
+     }
+    }
+   },
+   "paired": {
+    "alert_events_paired": 89,
+    "alert_flagged_both": 85,
+    "alert_flagged_only_with": 3,
+    "alert_flagged_only_without": 0,
+    "alert_mcnemar_p": 0.25,
+    "alert_lead_difference_min": -0.3707865168539326,
+    "alert_lead_difference_min_lo": -6.139343434343434,
+    "alert_lead_difference_min_hi": 5.218965517241376
+   },
+   "tide_gain_share": {
+    "gate_gain_share": 0.05766290294191806,
+    "rater_gain_share": 0.16153694403689933
+   },
+   "importance_with": [
+    {
+     "input": "rain_15min_mm",
+     "gate_gain": 36588.30591750145,
+     "rater_gain": 13435.438898801804
+    },
+    {
+     "input": "hour_sgt",
+     "gate_gain": 8096.972817763686,
+     "rater_gain": 5201.313930094242
+    },
+    {
+     "input": "minutes_to_high_tide",
+     "gate_gain": 4904.578400194645,
+     "rater_gain": 4954.058030128479
+    },
+    {
+     "input": "rain_gauges",
+     "gate_gain": 3623.1108770370483,
+     "rater_gain": 4331.1144943237305
+    },
+    {
+     "input": "forecast_rain_class",
+     "gate_gain": 36423.938799500465,
+     "rater_gain": 2791.817825436592
+    },
+    {
+     "input": "rain_30min_mm",
+     "gate_gain": 623.5699594020844,
+     "rater_gain": 280.28311866521835
+    },
+    {
+     "input": "rain_60min_mm",
+     "gate_gain": 157.49167882837355,
+     "rater_gain": 244.20129871368408
+    },
+    {
+     "input": "forecast_age_min",
+     "gate_gain": 704.1305304765701,
+     "rater_gain": 225.969300031662
+    },
+    {
+     "input": "tide_height_m",
+     "gate_gain": 371.19025695323944,
+     "rater_gain": 153.34269309043884
+    },
+    {
+     "input": "area",
+     "gate_gain": 0.0,
+     "rater_gain": 0.0
+    }
+   ]
+  }
+ ]
+}

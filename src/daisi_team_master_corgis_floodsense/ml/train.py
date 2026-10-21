@@ -15,6 +15,10 @@ the development period, the pair out of fold; and whether the pair beats the rul
 alarms (its Medium cut-off is held to the rule's false-alarm rate). The pair is registered as @challenger, and as
 @champion as well when it beats the rule.
 
+With --compare-without (default 'tide'), it refits the chosen pair without each named group of
+contract.FEATURE_GROUPS, in a nested run per group, and logs what the group adds: the headline metrics side by side, the
+PUB events matched one to one, and the group's share of the models' gain (compare.py).
+
 With --score-test true it also scores the test split, once, for both models: metrics with 95% CIs, the event-by-event
 tables, and the test predictions in ml.predictions. It refuses while the test's features haven't landed.
 """
@@ -31,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import baseline, gated
+from . import baseline, compare, gated
 from . import contract as C
 from .scoreboard import score
 from .split import make_split
@@ -207,6 +211,12 @@ def main(argv: list[str] | None = None) -> int:
             rule_metrics["false_alarms_per_area_month"],
         )
 
+        for group in args.compare_without:
+            compare_without(
+                group, rows, alerts, split, judge, missing, blind, recall, budget,
+                fitted, board, oof,
+            )  # fmt: skip
+
         full_name = (
             f"{args.catalog}.{args.ml_schema}.{args.model}" if args.model else None
         )
@@ -271,6 +281,61 @@ def load_rows(spark, gold: str, split: str, areas: list[str]) -> pd.DataFrame:
     codes = frame.pop("area_code").astype(int)
     frame.insert(0, "area", pd.Categorical.from_codes(codes, categories=areas))
     return frame
+
+
+def compare_without(
+    group,
+    rows,
+    alerts,
+    split,
+    judge,
+    missing,
+    blind,
+    recall,
+    budget,
+    fitted,
+    board,
+    oof,
+) -> pd.DataFrame:
+    """Refit the pair without one feature group, at the chosen gate recall and false-alarm budget, in a nested run, and
+    log the comparison to the parent run (metrics prefixed without_<group>_)."""
+    import mlflow
+
+    drop = C.FEATURE_GROUPS[group]
+    with mlflow.start_run(run_name=f"without {group}", nested=True):
+        _, without = gated.fit(
+            rows,
+            alerts,
+            split,
+            missing=missing,
+            blind=blind,
+            settings=gated.Settings(
+                gate_recall=recall, max_false_alarms=budget, drop=drop
+            ),
+        )
+        without_board = score(without.predictions(), **judge)
+        without_oof = without_board.metrics()
+        mlflow.log_params({"gate_recall": recall, "dropped": ",".join(drop)})
+        _log_metrics("pair", without.stats)
+        _log_metrics("oof", without_oof)
+        mlflow.log_table(without.importance, "importance.json")
+    table = compare.metric_table(
+        {**fitted.stats, **oof}, {**without.stats, **without_oof}
+    )
+    paired = compare.paired_events(board, without_board)
+    share = compare.importance_share(fitted.importance, drop)
+    mlflow.log_table(table, f"without_{group}_comparison.json")
+    _log_metrics(f"without_{group}", {**paired, **share})
+    _log_metrics(
+        f"without_{group}_delta", dict(zip(table["metric"], table["difference"]))
+    )
+    log.info(
+        "without %s: %s; paired events %s",
+        group,
+        table.to_dict("records"),
+        paired,
+    )
+    return table
 
 
 def load_coverage(spark, gold: str) -> pd.DataFrame:
@@ -417,6 +482,13 @@ def _parser() -> argparse.ArgumentParser:
         type=lambda text: [float(x) for x in text.split(",") if x.strip()],
         default=[gated.DEFAULTS.gate_recall],
         help="comma-separated gate recalls to try; the out-of-fold scoreboard picks one",
+    )
+    parser.add_argument(
+        "--compare-without",
+        type=lambda text: [g.strip() for g in text.split(",") if g.strip()],
+        default=["tide"],
+        help=f"comma-separated feature groups ({', '.join(C.FEATURE_GROUPS)}) to refit the pair without and compare; "
+        "empty for none",
     )
     parser.add_argument(
         "--score-test",
