@@ -27,6 +27,7 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
     """gold.model_rows and silver.area_alerts for the storms."""
     rng = np.random.default_rng(seed)
     ticks = pd.date_range(START, TEST_START, freq="5min", inclusive="left")
+    minutes = np.arange(len(ticks)) * 5.0
     frames, alerts = [], []
     for area in AREAS:
         rain = np.zeros(len(ticks))  # mm per 5-minute reading
@@ -60,6 +61,9 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
                     "rain_gauges": 3,
                     "forecast_rain_class": forecast,
                     "forecast_age_min": 10.0,
+                    # a semidiurnal tide (12.42 h), the same everywhere; storms don't follow it here
+                    "tide_height_m": 1.7 + np.cos(2 * np.pi * minutes / 745.2),
+                    "minutes_to_high_tide": (-minutes) % 745.2,
                 }
             )
         )

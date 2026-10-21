@@ -73,7 +73,7 @@ The bronze fetchers are written, tested and deployed to dev (see [Ingestion (bro
     - [ ] Radar starts on 2026-07-01, so a model trained on 2025 can't use it: archive it only for now (**Stretch**). Lightning starts on 2025-02-01, so it covers training.
 - [ ] Tides
     - [x] NEA tide table, scraped daily (this month and next); UHSLC Tanjong Pagar hourly, 1984–2023.
-    - [ ] Run the `uhslc` task, then check its row count and the `-32767` gaps. **W1**
+    - [ ] Run the `uhslc` task, then check its row count and the `-32767` gaps. **W1** Landed locally on 20 Oct: 350,632 hours (1984-01-01 to 2023-12-31 15:00 GMT), 12,386 of them `-32767`, almost all before 2016.
 - [ ] Static layers
     - [x] `fetch_static.py`: URA MP2019 and MP2025 land use, PUB water-level sensors, flood-prone area (ha), SLA vertical-control benchmarks.
     - [ ] Run the `static` task, and confirm each `static_*` table holds one `version`. **W1**
@@ -103,10 +103,10 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
         - [x] `published_at`: when NEA published each reading, from the CSVs. Gold needs it (see the reading-lag item below).
     - [ ] `silver.weather_5min`: air temperature, humidity, wind speed and wind direction, from 1-minute readings to 5-minute means. Average the wind as u/v components. **W2**
     - [x] `silver.forecasts_2h` (area, issued at, published at, valid window, category), with NEA's code and an ordinal `rain_class` (0–5) for the categories. Joins use only forecasts with `updated_at` before the tick. 4,140,371 rows, every category known.
-    - [ ] `silver.tides` **W2**:
-        - [ ] Fit utide once on UHSLC and keep the constituents.
-        - [ ] Predict 5-minute heights from 2025 through 2027.
-        - [ ] Fix the datum offset against NEA's high and low waters, then expect the predicted ones within a set tolerance of NEA's.
+    - [x] Tides (20 Oct; see [Tides](#tides)): `silver.tide_gauge_hourly` and `silver.tide_extremes` clean the two sources, and gold models and imputes:
+        - [x] `gold.tide_model`: utide fitted on UHSLC 2005–2023, constituents kept.
+        - [x] `gold.tide_levels`: a tide at every 5-minute tick, 2021 through next year, imputed from the prediction wherever the gauge is silent.
+        - [x] `gold.tide_datum`: the datum offset against NEA's high and low waters (−0.005 m), with expectations at 0.15 m and 30 min (worst seen: 0.11 m and 19 min).
 - [ ] Silver: labels **W1**
     - [x] `silver.telegram_posts`: one row per `message_id`, archive, wayback and live merged, latest version kept. Columns: category, method (`pattern` or `manual`; `laya` later), pattern, problem, hint, and the locations with their stamps.
         - [x] Stamp to datetime: the posting date, minus a day when the stamp is more than 10 minutes after the posting (posts just after midnight, e.g. ids 1122 and 1290).
@@ -145,7 +145,7 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
             - [ ] antecedent rain (3 h, 24 h) and rain trend;
             - [ ] upwind rain, using the wind vector;
             - [x] forecast category and its age (15 Oct);
-            - [ ] tide height and minutes to the next high tide;
+            - [x] tide height and minutes to the next high tide (20 Oct; the predicted tide, see [Tides](#tides));
             - [ ] temperature and humidity;
             - [ ] the `silver.area_static` columns.
             - [ ] Per-area history, such as the past alert rate, is computed on the training window only.
@@ -168,7 +168,7 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
     - [x] Smoke test on gold, 15 Oct, after geocoding (train split where gold had rain: 27 Oct 2021 – 22 May 2025, as far as the backfill had reached). Medium from `rain_15min_mm` ≥ 17.5, never High: 10.8% of 240 judged alert events flagged before PUB (95% CI 7.5–15.4%), 1.8 min mean lead, 0.83 false alarms per area-month. 160 events were unjudged: 114 next to id gaps (PUB deletes posts mostly during storms), the rest next to the 50 unplaced warnings. Not the real fit yet: that waits for the 2025 rain.
 - [x] `split.py`: `temporal_split` (the 80/20 cut on recorded ticks), 5 blocked day-folds in the development period, a 1-day embargo, and the test kept for a single run.
 - [ ] Setup **W1**
-    - [x] `lightgbm` and `scikit-learn` in `pyproject.toml`; the training job adds `lightgbm` to serverless environment 6, which has scikit-learn and `mlflow-skinny`. Still to add for silver: `utide`, `pyproj` and `shapely`.
+    - [x] `lightgbm` and `scikit-learn` in `pyproject.toml`; the training job adds `lightgbm` to serverless environment 6, which has scikit-learn and `mlflow-skinny`. `utide` is in `pyproject.toml` and in `flood-gold`'s environment (20 Oct). Still to add for silver: `pyproj` and `shapely`.
     - [x] `resources/train.job.yml` (`flood-train`) and `resources/ml.yml` (the MLflow experiment and the UC registered model), deployed to dev on 15 Oct.
     - [x] Every run logs `split.summary(...)`, and the coverage of each split.
 - [ ] Rule baseline end to end **W1**
@@ -438,6 +438,8 @@ Silver runs in the same `flood-etl` pipeline as bronze (`src/pipeline/transforma
 | `location_gazetteer` | alert location: lat/lon, method, area | alerts, hand fixes, API circles, sensors, `bronze.onemap_search` | materialized view |
 | `alerts` | alert location (Telegram or API), placed or not | the above | materialized view |
 | `area_alerts` | **the labels** (`contract.AREA_ALERTS_COLUMNS`): placed alerts, each once | `alerts` | materialized view |
+| `tide_gauge_hourly` | hour at Tanjong Pagar, 1984-2023: sea level (m above UHSLC's zero), null where UHSLC marks it missing | `bronze.uhslc_tanjong_pagar_hourly` | materialized view |
+| `tide_extremes` | NEA high or low water: time (SGT, to the minute), height (m above Chart Datum), each month as NEA last published it | `bronze.nea_tide_timings` | materialized view |
 | `alerts_unplaced` | alert no method could place (the quarantine) | `alerts` | materialized view |
 
 ### Reading PUB's posts
@@ -522,6 +524,9 @@ Gold is its own pipeline, `flood-gold` (`resources/gold.pipeline.yml`, code in `
 | `label_ticks` | tick, 27 Oct 2021 to the last complete midnight | whether the tick's label window is recorded, and its split |
 | `area_labels` | area × tick of `label_ticks` | the labels: `alert_status`, `alert_label`, `flood_label` |
 | `model_rows` | area × tick whose label and feature windows are both recorded | **what models learn from** (`split = 'train'`) and are tested on (`'test'`) |
+| `tide_model` | one row: the utide fit on Tanjong Pagar 2005–2023 | constituents, trend, residual, and the fit as JSON |
+| `tide_datum` | NEA high or low water, beside the model's | the datum offset, and how far the model is from NEA |
+| `tide_levels` | tick, 2021 through next year | the tide, imputed where the gauge is silent; `predicted_m` and `minutes_to_high_tide` go to `area_features` |
 
 ### Rain features
 
@@ -553,6 +558,42 @@ An `area_features` row exists wherever a gauge in reach reported in the last hou
 Why the forecast is a core feature (training ticks with rain features, 15 Oct): of 2,587 ticks an alert followed, 689 (27%) had no rain within 5 km in the hour the tick reads. That share grows with the time to the alert, from 6% within 15 minutes of it to 48% at 45–60 minutes: the early ticks, the ones that give lead time, are the dry ones. The forecast tells them apart: 52% of dry alert ticks had a forecast of rain (class 1 or more), against 7% of dry quiet ticks, and among dry ticks the alert rate under a thundery forecast (classes 4–5) is about 50 times that under a fair one.
 
 On 15 Oct, of the training split's 1,180 recorded label days, 763 have features. 210 are blind for want of forecasts, mostly Jan–Jun 2025, and 207 for want of rain, mostly Jul–Dec 2025 (`flood-etl` hadn't streamed the backfill past June). The whole test is blind. Both fill in as the API backfill lands and `flood-etl` and `flood-gold` run.
+
+### Tides
+
+The tide comes from one gauge, Tanjong Pagar (UHSLC station 699), and is the same for every area. UHSLC's research-quality record stops at the end of 2023, and NEA publishes only this month's and next month's high and low waters, so `gold.tide_model` fits utide (default constituents, linear trend, nodal corrections) on the 2005–2023 hours, a whole 18.6-year nodal cycle, and predicts every minute from 2021 to the end of next year. On 20 Oct the fit left 8.9 cm of surge (residual std) on a 71 cm tide, M2 0.80 m, S2 0.32 m, K1 0.31 m, O1 0.30 m; it gains 3.4 mm a year. Against NEA's Oct–Nov 2026 table, all 236 high and low waters matched, within 0.11 m (NEA prints 0.1 m) and 19 minutes. UHSLC's zero is 0.005 m below Chart Datum, which `gold.tide_datum` measures again on every update.
+
+`gold.tide_levels.tide_m` is imputed tick by tick, and `source` says how:
+
+- `observed`: the tick is on a valid UHSLC hour (2021–2023);
+- `interpolated`: between two valid hours, the prediction plus the gauge's surge interpolated between them (more accurate than a straight line through the hourly heights, which cuts across the tide's curve);
+- `predicted`: the prediction alone, in the gauge's gaps and on every tick from 2024 on.
+
+**The models read `predicted_m`, not `tide_m`.** No gauge reading arrives live, and none exists after 2023, so a model trained on 2021–2023 surges would lean on an input it never gets when scoring, and live/backfill parity would break. The astronomical tide is known in advance, so `area_features.tide_height_m` and `minutes_to_high_tide` (to the next predicted high water) are honest at every tick. `tide_m` is there for analysis, and for a later surge feature if a live sea-level feed turns up.
+
+First run in a workspace (both sources land in a few seconds, so a laptop is fine; `flood-live` keeps NEA's table fresh after that, and `flood-backfill`'s `uhslc` task does the same as the first line):
+
+```bash
+L=/Volumes/flood_dev/dev_<you>_bronze/landing
+uv run python src/ingestion/backfill.py uhslc --landing $L --profile flood_dev
+uv run python src/ingestion/fetch_live.py --landing $L --profile flood_dev --sources nea_tide_timings
+databricks bundle deploy -t dev -p flood_dev
+databricks bundle run etl -t dev -p flood_dev             # bronze and silver tide tables
+databricks bundle run gold_pipeline -t dev -p flood_dev   # the model, the datum check, tide_levels, area_features
+databricks bundle run train -t dev -p flood_dev           # the pair now reads the tide
+```
+
+```sql
+SET TIME ZONE 'Asia/Singapore';
+SELECT fit_start, fit_end, observations, residual_std_m, slice(constituents, 1, 4) FROM flood_dev.dev_<you>_gold.tide_model;
+-- how far the model is from NEA's table (expect within 0.15 m and 30 min)
+SELECT kind, count(*), max(abs(height_error_m)), max(abs(time_error_min)), any_value(datum_offset_m)
+FROM flood_dev.dev_<you>_gold.tide_datum GROUP BY ALL;
+-- how each year's tide was made
+SELECT year(ts), source, count(*), round(stddev(surge_m), 3) AS surge_sd FROM flood_dev.dev_<you>_gold.tide_levels GROUP BY ALL ORDER BY 1, 2;
+```
+
+The fit and the predictions run in pandas through applyInPandas (`daisi_team_master_corgis_floodsense/tides.py`, pickled by value like the label modules): the fit on one task (about 4 s), the predictions one SGT month per task. Adding the two columns changes `contract.MODEL_FEATURES`, so a saved `GatedPair` from before them refuses to load: retrain (`flood-train`) after `flood-gold` has run. The rater may only rise with `tide_height_m`, and a tide phrase in a reason ("high tide in 25 min") only ever follows a weather phrase.
 
 ### The split
 

@@ -75,6 +75,14 @@ def _rain_doc(minutes: int) -> str:
 
 # NEA's 2-hour forecast, as a live fetch at the tick would have had it: the newest one published (updated_at) by ts,
 # while its valid period lasts. rain_class orders the categories (pipeline/utilities/forecast_categories.py).
+# The tide: a harmonic model fitted on UHSLC's hourly sea level at Tanjong Pagar (1984-2023), checked against NEA's
+# high and low waters (gold.tide_datum). The models read the prediction, not the gauge: no gauge reading is available
+# live, and the 2024 onward record has none, so training on observed surges would teach the models an input they never
+# see when scoring. gold.tide_levels keeps the gauge-filled series for analysis.
+TIDE_START = date(
+    2021, 1, 1
+)  # the first SGT day gold.tide_levels fills, with the first rain readings
+
 RAIN_CLASSES = {
     0: "no rain",
     1: "light rain or showers",
@@ -95,6 +103,9 @@ AREA_FEATURES_COLUMNS = {
     + ", ".join(f"{k} {v}" for k, v in RAIN_CLASSES.items())
     + "; null if none was valid",
     "forecast_age_min": "minutes from that forecast's publication to ts; null with it",
+    "tide_height_m": "predicted tide at Tanjong Pagar at ts, metres above Chart Datum (gold.tide_levels.predicted_m): "
+    "the astronomical tide, known in advance, so it is the same live and in replays; the same for every area",
+    "minutes_to_high_tide": "minutes from ts to the next predicted high water at Tanjong Pagar",
 }
 # The columns a model reads, all of them known at the tick. The gated pair also reads the area and the SGT hour.
 MODEL_FEATURES = tuple(c for c in AREA_FEATURES_COLUMNS if c not in ("area", "ts"))

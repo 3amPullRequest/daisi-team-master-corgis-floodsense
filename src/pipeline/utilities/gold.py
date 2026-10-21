@@ -6,10 +6,15 @@ an SGT midnight is the UTC one minus 8 hours, and the tick grid is the same in b
 
 from datetime import date
 
+from pyspark import cloudpickle
 from pyspark.sql import Column, SparkSession
 from pyspark.sql import functions as F
 
+from daisi_team_master_corgis_floodsense import tides
 from daisi_team_master_corgis_floodsense.ml import contract as C
+
+# The tide model's pandas functions run on the executors (applyInPandas), which can't import this package.
+cloudpickle.register_pickle_by_value(tides)
 
 TICK_S = C.TICK_MINUTES * 60
 DAY_S = 24 * 3600

@@ -33,6 +33,8 @@ AREA_FEATURES_TYPES = {
     "rain_gauges": "INT",
     "forecast_rain_class": "INT",
     "forecast_age_min": "DOUBLE",
+    "tide_height_m": "DOUBLE",
+    "minutes_to_high_tide": "DOUBLE",
 }
 AREA_FEATURES_SCHEMA = ddl(C.AREA_FEATURES_COLUMNS, AREA_FEATURES_TYPES)
 

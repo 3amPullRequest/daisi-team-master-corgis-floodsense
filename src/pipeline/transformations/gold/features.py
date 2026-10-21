@@ -1,6 +1,7 @@
 """gold.area_features: what each NEA forecast area had seen at each 5-minute tick (contract.AREA_FEATURES_COLUMNS): the
-rain near it and NEA's 2-hour forecast for it. Also gold.area_rain_stations (the gauges within reach of each area),
-gold.area_forecasts (the forecast valid at each tick) and gold.feature_ticks (whether a tick's features are known).
+rain near it, NEA's 2-hour forecast for it and the predicted tide (gold.tide_levels). Also gold.area_rain_stations (the
+gauges within reach of each area), gold.area_forecasts (the forecast valid at each tick) and gold.feature_ticks
+(whether a tick's features are known).
 
 A reading counts at the ticks whose windows hold it, from contract.READING_LAG_MINUTES after its timestamp, and not
 before NEA published it where NEA says when (silver.rainfall_5min.published_at, the CSV years). A forecast counts from
@@ -113,7 +114,8 @@ def area_forecasts():
     name=C.AREA_FEATURES,
     comment="What each NEA forecast area had seen at each 5-minute tick: the largest 15/30/60-minute rain total among "
     f"the gauges within {C.GAUGE_RADIUS_KM:g} km, from the readings published by the tick (READING_LAG_MINUTES = "
-    f"{C.READING_LAG_MINUTES}), and NEA's 2-hour forecast valid at the tick. One row per area and tick wherever a "
+    f"{C.READING_LAG_MINUTES}), NEA's 2-hour forecast valid at the tick, and the predicted tide at Tanjong Pagar "
+    "with the minutes to its next high water. One row per area and tick wherever a "
     "gauge in reach had a reading in the last hour; a missing row means no data, not a dry tick (gold.feature_ticks). "
     "What the rainfall rule and the gated LightGBM pair read.",
     schema=AREA_FEATURES_SCHEMA,
@@ -126,6 +128,8 @@ def area_forecasts():
         "AND coalesce(rain_30min_mm, 0) <= rain_60min_mm",
         "rain_plausible": "rain_60min_mm < 250",
         "forecast_fresh": "forecast_age_min IS NULL OR forecast_age_min BETWEEN 0 AND 120",
+        "tide_known": "tide_height_m IS NOT NULL AND minutes_to_high_tide IS NOT NULL",
+        "high_tide_within_a_day": "minutes_to_high_tide BETWEEN 0 AND 1560",  # 26 h: some days have one high water
     }
 )
 def area_features():
@@ -169,13 +173,25 @@ def area_features():
         "forecast_rain_class",
         "forecast_age_min",
     )
-    return per_area.join(forecasts, ["area", "tick_s"], "left").select(
-        "area",
-        F.timestamp_seconds("tick_s").alias("ts"),
-        *(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES),
-        "rain_gauges",
-        "forecast_rain_class",
-        "forecast_age_min",
+    # the same tide for every area: the model's, not the gauge's (contract.py)
+    tide = spark.read.table("tide_levels").select(
+        seconds("ts").alias("tick_s"),
+        F.col("predicted_m").alias("tide_height_m"),
+        "minutes_to_high_tide",
+    )
+    return (
+        per_area.join(forecasts, ["area", "tick_s"], "left")
+        .join(tide, "tick_s", "left")
+        .select(
+            "area",
+            F.timestamp_seconds("tick_s").alias("ts"),
+            *(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES),
+            "rain_gauges",
+            "forecast_rain_class",
+            "forecast_age_min",
+            "tide_height_m",
+            "minutes_to_high_tide",
+        )
     )
 
 

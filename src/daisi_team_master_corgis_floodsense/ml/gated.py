@@ -44,7 +44,10 @@ from .split import Split, _sgt
 AREA, HOUR = "area", "hour_sgt"
 INPUTS = (AREA, HOUR, *C.MODEL_FEATURES)  # what both models read, in this order
 RAIN = tuple(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES)
-RISING = {*RAIN, "forecast_rain_class"}  # the alert chance may only rise with these
+# the alert chance may only rise with these
+RISING = {*RAIN, "forecast_rain_class", "tide_height_m"}
+TIDE = ("tide_height_m", "minutes_to_high_tide")
+HIGH_TIDE_M = 2.5  # above Chart Datum; Tanjong Pagar's high waters run about 2.2-3.2 m (NEA, Oct-Nov 2026)
 
 # Few events (about 160 alert days in training), so both models are small and heavily regularised.
 GATE_PARAMS = {
@@ -172,17 +175,24 @@ class GatedPair:
         texts = []
         for row, contribution in zip(rows.to_dict("records"), contributions):
             ranked = np.argsort(-contribution[:-1])  # the last column is the bias
-            phrases = [_phrase(INPUTS[i], row) for i in ranked if contribution[i] > 0]
-            phrases = [p for p in phrases if p][:2]
-            # nothing raised the score on its own (inputs only act together): name the weather anyway
-            weather = (_phrase(c, row) for c in (*RAIN, "forecast_rain_class"))
-            texts.append(
-                "; ".join(phrases)
-                or next(
-                    (w for w in weather if w),
-                    "conditions like those before past PUB alerts",
-                )
+            raised = [INPUTS[i] for i in ranked if contribution[i] > 0]
+            phrases = [p for p in (_phrase(c, row) for c in raised) if p][:2]
+            # nothing raised the score on its own (inputs only act together): name the weather anyway. The tide only
+            # adds to a reason: a high tide alone never floods a drain.
+            weather = next(
+                (
+                    w
+                    for w in (_phrase(c, row) for c in (*RAIN, "forecast_rain_class"))
+                    if w
+                ),
+                "conditions like those before past PUB alerts",
             )
+            tide_only = all(c in TIDE for c in raised if _phrase(c, row))
+            if not phrases:
+                phrases = [weather]
+            elif tide_only:
+                phrases = [weather, phrases[0]]
+            texts.append("; ".join(phrases))
         reason[warned] = texts
         return reason
 
@@ -594,13 +604,21 @@ def _train(
 
 def _phrase(name: str, row: dict) -> str | None:
     """The app's words for one input of a warned row, or None for inputs that don't make a reason a resident can act
-    on (the hour, gauge counts, forecast age)."""
+    on (the hour, gauge counts, forecast age), or that didn't add to the risk here (a low tide)."""
     value = row.get(name)
     if name in RAIN and value is not None and value >= 1:
         minutes = name.removeprefix("rain_").removesuffix("min_mm")
         return f"{value:.0f} mm of rain within {C.GAUGE_RADIUS_KM:g} km in the last {minutes} min"
     if name == "forecast_rain_class" and value:
         return f"NEA forecasts {C.RAIN_CLASSES[int(value)]} here"
+    if name == "tide_height_m" and value is not None and value >= HIGH_TIDE_M:
+        return f"the tide is high ({value:.1f} m), so drains empty to the sea slowly"
+    if (
+        name == "minutes_to_high_tide"
+        and value is not None
+        and value <= C.HORIZON_MINUTES
+    ):
+        return f"high tide in {value:.0f} min"
     if name == AREA:
         return f"PUB has often alerted in {row[AREA]} in weather like this"
     return None
