@@ -9,6 +9,10 @@ resources:
       schedule:
         quartz_cron_expression: "0 30 0 * * ?"   # 00:30 SGT, once yesterday's readings have settled
         timezone_id: ${var.timezone}
+      email_notifications:   # the nightly repair and gold refresh keep the live tables whole
+        on_failure:
+          - ${workspace.current_user.userName}
+        no_alert_for_skipped_runs: true
       tasks:
         - task_key: repair
           environment_key: default

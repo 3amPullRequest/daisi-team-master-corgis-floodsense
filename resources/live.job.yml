@@ -1,3 +1,7 @@
+# The live loop, every ${var.live_schedule}: fetch the newest pages, stream them through bronze and silver, score the
+# newest ticks for all 47 areas into ml.predictions (ml/live.py). A run that would overlap the previous one is skipped,
+# and the next one catches up: fetch reads the newest 25 records of each source, score every tick since its last.
+# flood-watchdog (watchdog.job.yml) emails when any of this goes stale.
 resources:
   jobs:
     live:
@@ -12,6 +16,7 @@ resources:
       tasks:
         - task_key: fetch
           environment_key: default
+          timeout_seconds: 240   # a hung request mustn't hold the job past the next tick
           spark_python_task:
             python_file: ../src/ingestion/fetch_live.py
             parameters:
@@ -24,12 +29,41 @@ resources:
         - task_key: refresh_pipeline
           depends_on:
             - task_key: fetch
-          run_if: ALL_DONE   # land what did arrive even if one source failed
+          run_if: ALL_DONE   # land what did arrive even if a core source failed
+          timeout_seconds: 600
           pipeline_task:
             pipeline_id: ${resources.pipelines.etl.id}
+        - task_key: score
+          depends_on:
+            - task_key: refresh_pipeline
+          run_if: ALL_DONE   # it scores only ticks whose readings reached silver, so a failed refresh scores nothing new
+          environment_key: ml
+          timeout_seconds: 300
+          max_retries: 1   # serverless start-up or a model download can fail once
+          min_retry_interval_millis: 15000
+          spark_python_task:
+            python_file: ../src/ml/score_live.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --gold-schema
+              - ${resources.schemas.gold.name}
+              - --silver-schema
+              - ${resources.schemas.silver.name}
+              - --ml-schema
+              - ${resources.schemas.ml.name}
+              - --model
+              - ${resources.registered_models.floodsense.name}
+              - --experiment
+              - ${resources.experiments.training.name}
       environments:
         - environment_key: default
           spec:
             environment_version: "2"
             dependencies:
               - requests
+        - environment_key: ml   # as flood-train's, which logged the model
+          spec:
+            environment_version: "6"   # Python 3.12, pandas 2.3, scikit-learn 1.7, mlflow-skinny 3.12
+            dependencies:
+              - lightgbm==4.7.0

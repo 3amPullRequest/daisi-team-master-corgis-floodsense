@@ -1,5 +1,6 @@
 """One live tick: the newest page of every API source, new Telegram posts, new radar frames, and (once a day) NEA's
-tide table, then a heartbeat line summarising the tick. `main` can repeat ticks on an interval."""
+tide table, then a heartbeat line summarising the tick. `main` can repeat ticks on an interval. A run exits non-zero
+(failing flood-live's fetch task) only when a core source failed (sources.CORE_SOURCES); others are in the heartbeat."""
 
 from __future__ import annotations
 
@@ -69,6 +70,8 @@ def run_tick(
         runner=runner,
         finished_at=S.iso(S.utcnow()),
         ok=all(r["ok"] for r in results),
+        # every core source this tick fetched answered (S.CORE_SOURCES)
+        core_ok=all(r["ok"] for r in results if r["source"] in S.CORE_SOURCES),
         results=results,
     )
     sink.write_bytes(S.run_path(S.HEARTBEAT, "ticks", started), S.jsonl([heartbeat]))
@@ -243,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
         if args.trigger_job:
             _trigger(sink, args.profile, args.trigger_job)
-        return heartbeat["ok"]
+        return heartbeat["core_ok"]
 
     if not args.every:
         return 0 if tick() else 1

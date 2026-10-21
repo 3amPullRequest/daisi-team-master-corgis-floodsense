@@ -441,8 +441,11 @@ def check_test_coverage(coverage: pd.DataFrame) -> None:
         )
 
 
-def write_predictions(spark, table: str, preds: pd.DataFrame) -> None:
-    """Replace these models' rows of ml.predictions (creating the table with the contract's comments if needed)."""
+def write_predictions(
+    spark, table: str, preds: pd.DataFrame, ticks: tuple | None = None
+) -> None:
+    """Replace these models' rows of ml.predictions (creating the table with the contract's comments if needed): all of
+    them, or with `ticks` (first, last; naive SGT) only those in that span, as live scoring appends tick by tick."""
     columns = ", ".join(
         f"{c} {PREDICTIONS_TYPES[c]} COMMENT {_quoted(doc)}"
         for c, doc in C.PREDICTIONS_COLUMNS.items()
@@ -452,6 +455,10 @@ def write_predictions(spark, table: str, preds: pd.DataFrame) -> None:
         "COMMENT 'FloodSense predictions: one row per model, NEA forecast area and tick (contract.PREDICTIONS_COLUMNS)'"
     )
     models = " OR ".join(f"model = {_quoted(m)}" for m in preds["model"].unique())
+    if ticks is not None:
+        first, last = (pd.Timestamp(t).strftime("%Y-%m-%d %H:%M:%S") for t in ticks)
+        # the session time zone is SGT (train.main, live.main), so these literals are SGT
+        models = f"({models}) AND ts BETWEEN TIMESTAMP '{first}' AND TIMESTAMP '{last}'"
     frame = preds.astype({"area": str})[list(C.PREDICTIONS_COLUMNS)]
     # the rule has no probability: NULL, not NaN
     frame["p_alert"] = (

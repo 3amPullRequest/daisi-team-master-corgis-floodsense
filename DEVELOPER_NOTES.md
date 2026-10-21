@@ -174,7 +174,7 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
 - [ ] Rule baseline end to end **W1**
     - [x] `flood-train` fits it on the development period and logs its parameters, scoreboard metrics and threshold curve to MLflow, next to the pair.
     - [ ] Write its predictions to `ml.predictions`. `flood-train` writes them for the test split when it scores it (`score_test=true`); live predictions come with the `score` task.
-    - [ ] Add a `score` task to `flood-live`, after `refresh_pipeline`, that scores the newest tick for all 47 areas. The app then runs on the rule in Week 1.
+    - [ ] Add a `score` task to `flood-live`, after `refresh_pipeline`, that scores the newest tick for all 47 areas. The app then runs on the rule in Week 1. Written and tested locally on 21 Oct (`ml/live.py`; see [Staying live](#staying-live)); not yet deployed.
 - [ ] Gated LightGBM pair **W2** (`ml/gated.py`, trained by `flood-train`; first trained 15 Oct on the training time gold could use then, Nov 2021 – Dec 2024)
     - [x] Gate: a LightGBM, not a rain threshold. A third of the training ticks an alert followed had no rain within 5 km yet, so any rain threshold drops the early ticks that give lead time; the gate reads the forecast and the hour too. It trains on every recorded tick (quiet ones subsampled to 5% and weighted back up), and its out-of-fold scores set its threshold: the highest that passes 90% of alert ticks. 15 Oct: it passes 12% of area-ticks and leaves 90% of PUB events catchable. The job tries gate recalls 0.85, 0.9 and 0.95, and the scoreboard picks one.
     - [x] Rater: LightGBM on the ticks the out-of-fold gate passed.
@@ -195,7 +195,7 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
 - [ ] Register and serve **W2**
     - [x] One pyfunc (`ml/serving.py`) holds the gate, rater, calibrator, cut-offs and reasons. Registered in UC as `<catalog>.<ml schema>.floodsense` (dev: `flood_dev.dev_stkinzheng_ml.dev_stkinzheng_floodsense`): every version `@challenger`, and `@champion` when it beats the rule out of fold.
     - [ ] Register the rule too, as the comparison.
-    - [ ] Switch the `flood-live` `score` task to `@champion`. It scores inside the job, with no serving endpoint (Free Edition limits those), and appends `model, area, ts, tier, p_alert, reason`. Cast the feature columns to double first: the model's signature refuses int64.
+    - [ ] Switch the `flood-live` `score` task to `@champion`. It scores inside the job, with no serving endpoint (Free Edition limits those), and appends `model, area, ts, tier, p_alert, reason`. Cast the feature columns to double first: the model's signature refuses int64. Done in code on 21 Oct: `@champion` when it loads, else the newest trained rule; features cast to float64. Not yet deployed.
     - [ ] Live scorekeeping: a daily task scores every live prediction against the alerts that followed, the "keeps score in public" promise.
     - [ ] Storm replay: batch-score one flash-flood day from 22–30 Sep 2026 at every tick, and record how many minutes before PUB's first alert its area turned Medium.
 - [ ] **Stretch:** a separate flash-flood model for High; sea-level-rise scenarios (re-score with tide offsets); upstream-catchment rainfall; radar and lightning features.
@@ -313,7 +313,8 @@ JSON lines are parsed into a VARIANT `payload` column, so query them like `paylo
 
 The egress probe confirmed on 2026-10-10 that Free Edition serverless can reach data.gov.sg, its S3 downloads, t.me, nea.gov.sg and UHSLC. So the fetchers run as jobs:
 
-- **`flood-live`** (`resources/live.job.yml`): every `${var.live_schedule}` (default 5 min), runs `fetch` then `refresh_pipeline`.
+- **`flood-live`** (`resources/live.job.yml`): every `${var.live_schedule}` (default 5 min), runs `fetch`, `refresh_pipeline`, then `score` (the newest ticks into `ml.predictions`; see [Staying live](#staying-live)).
+- **`flood-watchdog`** (`resources/watchdog.job.yml`): hourly, emails the deployer when the live feed or the predictions go stale.
 - **`flood-daily`** (`resources/daily.job.yml`): at 00:30 SGT, re-pulls the last two days in full, so gaps in the live feed get filled.
 - **`flood-backfill`** (`resources/backfill.job.yml`, manual): static layers, Telegram archive, UHSLC and yearly CSVs, then a pipeline refresh.
 
@@ -329,6 +330,39 @@ uv run python src/ingestion/fetch_live.py --landing /Volumes/flood_dev/dev_<you>
 ```
 
 In local mode, also remove the `fetch` task and the schedule from `live.job.yml`.
+
+### Staying live
+
+What "live" means here: every few minutes, `ml.predictions` gains the newest tick for all 47 areas, read by the app and the dashboard. Until 21 Oct the chain stopped at silver: `flood-live` fetched and refreshed `flood-etl`, but nothing scored, and gold refreshed only at night. Now:
+
+| Job | When | What keeps it live |
+|---|---|---|
+| `flood-live` | every `live_schedule` (5 min) | `fetch` (240 s timeout) → `refresh_pipeline` (600 s) → `score` (300 s, one retry). Overlapping runs are skipped, not queued, and the next run catches up: fetch reads the newest 25 records of each source, and score scores every tick since its last, at most 2 hours back. |
+| `flood-daily` | 00:30 SGT | re-pulls the last two days in full, refreshes gold (`area_rain_stations`, `tide_levels`, which score reads). Emails the deployer on failure. |
+| `flood-watchdog` | hourly at :07 | fails, and emails the deployer, when the newest tick, core-source fetch, rain reading or prediction is older than 20/20/30/30 min (`freshness.py`). |
+
+- **`score`** (`ml/live.py`, `src/ml/score_live.py`) computes the newest ticks' features from silver with gold's own functions (`daisi_team_master_corgis_floodsense/features.py`, which `gold/features.py` now calls too), so a live prediction reads exactly what the models learnt from. Checked locally on 21 Oct: over a span of 15 ticks, its rows equal `gold.area_features`' row for row. It scores only ticks whose rain window has reached silver (newest reading + 10 min), so a failed refresh scores nothing rather than a false all-clear, and each tick once. It uses `@champion`, else the rule from the newest `flood-train` run (the `rule` parameter); a pair saved before the tide columns still loads, as a pair records its inputs.
+- **A fetch fails only when a core source fails** (`sources.CORE_SOURCES`: rainfall and the 2-hour forecast, what every tick's features need). Radar, lightning, Telegram and the rest still show `ok: false` in the heartbeat, and `flood-daily` repairs their days, but they no longer mark every `flood-live` run failed.
+- **Turn it on after each deploy.** Dev deploys pause every schedule (`mode: development`), so a redeploy stops the feed until it's unpaused. Unpause `flood-live`, `flood-daily` and `flood-watchdog` in the Jobs UI, or:
+
+  ```bash
+  for name in flood-live flood-daily flood-watchdog; do
+    id=$(databricks jobs list -p flood_dev -o json | jq -r --arg n "$name" '.[] | select(.settings.name | endswith($n)) | .job_id')
+    databricks jobs get $id -p flood_dev -o json | jq '{job_id, new_settings: {schedule: (.settings.schedule + {pause_status: "UNPAUSED"})}}' \
+      | databricks jobs update --json @/dev/stdin -p flood_dev
+  done
+  ```
+
+- **Quota.** Each `flood-live` run starts serverless compute three times (job tasks and the pipeline). If the Free Edition daily quota runs out, everything stops until the next day, and `flood-watchdog`'s email is the sign. Outside demo windows run `live_schedule: "0 0/15 * * * ?"`; for the demo, 5 minutes. A `flood-etl` update takes about 5 minutes (14 Oct), so at a 5-minute cadence about every other run is skipped: predictions arrive roughly every 10 minutes either way.
+- **Check it:**
+
+  ```sql
+  SET TIME ZONE 'Asia/Singapore';
+  SELECT model, max(ts) AS newest_tick, count(DISTINCT area) AS areas, timestampdiff(MINUTE, max(ts), current_timestamp()) AS lag_min
+  FROM flood_dev.dev_<you>_ml.predictions WHERE ts > current_timestamp() - INTERVAL 1 DAY GROUP BY model;
+  ```
+
+  `databricks bundle run watchdog -t dev -p flood_dev` runs the same check the hourly job does.
 
 ### One-time setup
 
@@ -594,6 +628,8 @@ SELECT year(ts), source, count(*), round(stddev(surge_m), 3) AS surge_sd FROM fl
 ```
 
 The fit and the predictions run in pandas through applyInPandas (`daisi_team_master_corgis_floodsense/tides.py`, pickled by value like the label modules): the fit on one task (about 4 s), the predictions one SGT month per task. Adding the two columns changes `contract.MODEL_FEATURES`, so a saved `GatedPair` from before them refuses to load: retrain (`flood-train`) after `flood-gold` has run. The rater may only rise with `tide_height_m`, and a tide phrase in a reason ("high tide in 25 min") only ever follows a weather phrase.
+
+What the tide adds: `flood-train` refits the chosen pair without each group in `--compare-without` (job parameter `compare_without`, default `tide`; groups in `contract.FEATURE_GROUPS`) and logs the comparison to the run (`without_tide_comparison.json`, `without_tide_*` metrics; `ml/compare.py`). Until the workspace is reachable, `explorations/tide_ablation_local.py` runs the same comparison on landed files with one island-wide area: on 21 Oct, over 2021–2024, the tide gave a small, consistent edge (ROC-AUC +0.0004; at a 5% warning budget 98.9% of 89 events flagged before PUB against 95.5%, McNemar p ≥ 0.125). Alerts were more common at low tide, so the `RISING` constraint on `tide_height_m` should go. Full write-up in `DEMO_DAY_NOTES.md`.
 
 ### The split
 

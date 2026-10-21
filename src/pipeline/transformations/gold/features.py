@@ -9,26 +9,20 @@ the tick at or after its publication (updated_at) until a newer one is published
 sees only what a live fetch at that moment could have had, and replays of past storms are honest. Sums are exact
 decimals and the max over gauges doesn't depend on order, so a rebuild gives the same values however Spark splits the
 work.
+
+The definitions live in the floodsense package (features.py), which flood-live's score task shares, so a live
+prediction reads exactly what the models learnt from.
 """
 
 from pyspark import pipelines as dp
-from pyspark.sql import Window
 from pyspark.sql import functions as F
 from utilities.contract_tables import AREA_FEATURES_SCHEMA, FEATURE_TICKS_SCHEMA
-from utilities.gold import (
-    TICK_S,
-    seconds,
-    silver,
-    tick_at_or_after,
-    tick_before,
-    ticks_between,
-)
+from utilities.gold import TICK_S, seconds, silver
 from utilities.silver import distance_km
 
+from daisi_team_master_corgis_floodsense import features as F_
+from daisi_team_master_corgis_floodsense.features import LAG_S, SLOTS
 from daisi_team_master_corgis_floodsense.ml import contract as C
-
-LAG_S = C.READING_LAG_MINUTES * 60
-SLOTS = max(C.RAIN_WINDOWS_MINUTES) // C.TICK_MINUTES  # readings in the longest window
 
 
 @dp.materialized_view(
@@ -73,41 +67,7 @@ def area_rain_stations():
 )
 @dp.expect("rain_class_known", "forecast_rain_class BETWEEN 0 AND 5")
 def area_forecasts():
-    published = (
-        spark.read.table(silver(spark, "forecasts_2h"))
-        .where(
-            "area IS NOT NULL AND updated_at IS NOT NULL AND valid_to IS NOT NULL AND rain_class IS NOT NULL"
-        )
-        .select(
-            "area",
-            "rain_class",
-            seconds("updated_at").alias("published_s"),
-            seconds("issued_at").alias("issued_s"),
-            seconds("valid_to").alias("valid_to_s"),
-        )
-    )
-    # the newest wins from its publication on; of two published at once, the later issue
-    newer = F.lead("published_s").over(
-        Window.partitionBy("area").orderBy("published_s", "issued_s")
-    )
-    # least() skips the null after the newest publication
-    spans = published.withColumn("until_s", F.least(newer, F.col("valid_to_s")))
-    ticks = spans.select(
-        "area",
-        "rain_class",
-        "published_s",
-        ticks_between(
-            tick_at_or_after(F.col("published_s")), tick_before(F.col("until_s"))
-        ).alias("tick_s"),
-    )
-    return ticks.select(
-        "area",
-        F.timestamp_seconds("tick_s").alias("ts"),
-        F.col("rain_class").cast("int").alias("forecast_rain_class"),
-        ((F.col("tick_s") - F.col("published_s")) / 60)
-        .cast("double")
-        .alias("forecast_age_min"),
-    )
+    return F_.forecast_ticks(spark.read.table(silver(spark, "forecasts_2h")))
 
 
 @dp.materialized_view(
@@ -133,65 +93,11 @@ def area_forecasts():
     }
 )
 def area_features():
-    readings = spark.read.table(silver(spark, "rainfall_5min")).where(
-        "rain_mm IS NOT NULL AND ts IS NOT NULL AND station_id IS NOT NULL"
-    )
-    # slot k: the reading is the kth newest in the windows of the tick it lands on
-    counted = readings.select(
-        "station_id",
-        F.col("rain_mm").cast("decimal(9,2)").alias("mm"),
-        seconds("published_at").alias("published_s"),
-        seconds("ts").alias("reading_s"),
-        F.explode(F.sequence(F.lit(0), F.lit(SLOTS - 1))).alias("slot"),
-    ).withColumn("tick_s", F.col("reading_s") + LAG_S + F.col("slot") * TICK_S)
-    counted = counted.where(
-        F.col("published_s").isNull() | (F.col("published_s") <= F.col("tick_s"))
-    )
-    per_gauge = counted.groupBy("station_id", "tick_s").agg(
-        *(
-            F.sum(F.when(F.col("slot") < w // C.TICK_MINUTES, F.col("mm"))).alias(
-                f"w{w}"
-            )
-            for w in C.RAIN_WINDOWS_MINUTES
-        )
-    )
-    reach = spark.read.table("area_rain_stations").where("station_id IS NOT NULL")
-    per_area = (
-        per_gauge.join(F.broadcast(reach.select("area", "station_id")), "station_id")
-        .groupBy("area", "tick_s")
-        .agg(
-            *(
-                F.max(f"w{w}").cast("double").alias(C.rain_column(w))
-                for w in C.RAIN_WINDOWS_MINUTES
-            ),
-            F.count("*").cast("int").alias("rain_gauges"),
-        )
-    )
-    forecasts = spark.read.table("area_forecasts").select(
-        "area",
-        seconds("ts").alias("tick_s"),
-        "forecast_rain_class",
-        "forecast_age_min",
-    )
-    # the same tide for every area: the model's, not the gauge's (contract.py)
-    tide = spark.read.table("tide_levels").select(
-        seconds("ts").alias("tick_s"),
-        F.col("predicted_m").alias("tide_height_m"),
-        "minutes_to_high_tide",
-    )
-    return (
-        per_area.join(forecasts, ["area", "tick_s"], "left")
-        .join(tide, "tick_s", "left")
-        .select(
-            "area",
-            F.timestamp_seconds("tick_s").alias("ts"),
-            *(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES),
-            "rain_gauges",
-            "forecast_rain_class",
-            "forecast_age_min",
-            "tide_height_m",
-            "minutes_to_high_tide",
-        )
+    return F_.area_features(
+        spark.read.table(silver(spark, "rainfall_5min")),
+        spark.read.table("area_rain_stations"),
+        spark.read.table("area_forecasts"),
+        spark.read.table("tide_levels"),
     )
 
 
