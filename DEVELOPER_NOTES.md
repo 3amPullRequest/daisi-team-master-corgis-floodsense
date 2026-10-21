@@ -202,16 +202,16 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
 
 ### Analytics and BI
 
-`resources/app.yml`, `dashboard.yml` and `genie.yml`, `src/app/` and `src/dashboards/` are all still empty.
+`resources/app.yml` and `src/app/` hold the FloodSense app (21 Oct; see [The app](#the-app)). `dashboard.yml`, `genie.yml` and `src/dashboards/` are still empty.
 
 - [ ] FloodSense app (a Databricks App, for residents)
-    - [ ] Choose the framework (AppKit, or Python if the team prefers) and deploy a stub to the final demo workspace early, as the guide advises. **W1**
-    - [ ] Map of the 47 areas, coloured by tier from the newest `ml.predictions`, running on the rule baseline. **W1**
-    - [ ] Area panel: tier, `p_alert`, the reason, and actions for drivers, residents and shop owners (fixed templates per tier and audience). **W2**
-    - [ ] Live mode: refreshes every 5 minutes and shows data freshness from `bronze.ingest_heartbeat`. **W2**
-    - [ ] Replay mode: pick a storm, play it tick by tick, and mark PUB's first alert and the moment the area turned Medium. **W2**
-    - [ ] Scoreboard view, plus a line saying FloodSense is an earlier layer on top of PUB's alerts, not a replacement. **W2**
-    - [ ] Works on a phone. **W2**
+    - [ ] Choose the framework (AppKit, or Python if the team prefers) and deploy a stub to the final demo workspace early, as the guide advises. **W1** React + FastAPI, built and run locally against dev on 21 Oct; not yet deployed.
+    - [x] Map of the 47 areas, coloured by tier from the newest `ml.predictions` (the champion pair, else the rule).
+    - [x] Area panel: tier, `p_alert` as plain odds, the reason, the last hour's rain, the tide, and actions for drivers, residents and shop owners (`frontend/src/lib/content.ts`).
+    - [x] Live mode: rechecks every minute, shows when the forecast was made, and says so when it is over 20 minutes old.
+    - [x] Replay mode: storm days after the training data, scored tick by tick by the @champion model in the app, with PUB's alerts and a did-it-warn-first table.
+    - [x] Scoreboard view ("How reliable is it?", from the champion's MLflow run), plus the line that FloodSense is an earlier layer on top of PUB's alerts, not a replacement.
+    - [x] Works on a phone (checked at 375 px).
 - [ ] AI/BI dashboard (for agencies)
     - [ ] Flood-prone trend panel (`gold.flood_prone_trend`, 2022–2025), with the 36 listed locations on a map. **W1**
     - [ ] PUB's re-measured warning time (`gold.pub_lead_times`) against the 30-minute target. **W1**
@@ -221,6 +221,34 @@ Silver is built (14 Oct) up to the labels and the two core feature sources; see 
     - [ ] Tables `silver.area_alerts`, `ml.predictions` and the scoreboard tables, with descriptions, instructions and sample SQL.
     - [ ] Test the exact demo question in advance (e.g. "Which areas had the most false alarms last month?") and keep a screenshot of the answer.
 - [ ] **Stretch:** Telegram push alerts, or a hand-off to PUB's channel.
+
+### The app
+
+`src/app/` is a Databricks App: a React front end (`frontend/`, Vite + TypeScript) served by FastAPI (`backend/`). It reads, through the SQL warehouse:
+
+- `ml.predictions`: the newest tick's tier for every area (the pair over the rule when both scored it), and an area's last hours;
+- `silver.rainfall_5min` with `gold.area_rain_stations`: the wettest gauge within 5 km over the last hour;
+- `gold.tide_levels`: the tide now and the next high water;
+- `bronze.ingest_heartbeat`: when the feed last fetched.
+
+The track record comes from the @champion version's MLflow run (out-of-fold metrics, the rule's, and the without-tide comparison). Replays download the @champion model from Unity Catalog once and score a past day's `gold.area_features` (47 areas × 288 ticks, about 40 s the first time, cached after). They're limited to days from `contract.TEST_START` (20 Dec 2025) on, which the model never trained on. The map's areas are Voronoi cells around NEA's label points clipped to the Master Plan 2019 land-use outline, built once by `src/app/scripts/build_area_map.py` into `frontend/public/areas.geojson`. Address search goes through OneMap; "Use my location" works without it.
+
+Run it locally (Python 3.11, as the Apps runtime):
+
+```bash
+(cd src/app/frontend && npm ci && npm run build)
+pip install -r src/app/requirements.txt
+DATABRICKS_CONFIG_PROFILE=flood_dev DATABRICKS_WAREHOUSE_ID=<warehouse id> FLOODSENSE_SCHEMA_PREFIX=dev_<you>_ \
+  uvicorn backend.main:app --app-dir src/app --port 8000
+```
+
+Deploy: build the front end first (the bundle syncs `frontend/dist`, which git ignores), then `databricks bundle deploy -t dev -p flood_dev` and `databricks bundle run floodsense_app -t dev -p flood_dev`. The bundle gives the app's service principal the warehouse (CAN_USE) and the experiment (CAN_READ). Unity Catalog access is granted separately, once, with the principal's application id:
+
+```sql
+GRANT USE CATALOG ON CATALOG flood_dev TO `<app principal>`;              -- by the catalog's owner
+GRANT USE SCHEMA, SELECT ON SCHEMA flood_dev.dev_<you>_ml TO `<app principal>`;   -- and _silver, _gold, _bronze
+GRANT EXECUTE ON MODEL flood_dev.dev_<you>_ml.dev_<you>_floodsense TO `<app principal>`;
+```
 
 ### Governance (Stretch)
 
