@@ -89,3 +89,9 @@ def test_the_watchdog_names_what_went_stale():
     assert any("prediction is 120 min old" in p for p in found)
     assert "no core sources at all" in found
     assert all(not math.isnan(v) for v in freshness.LIMITS_MIN.values())
+
+
+def test_epoch_seconds_read_back_as_sgt():
+    # 2026-10-21 08:10 UTC is 16:10 in Singapore: the reading the first live run misread
+    assert freshness.sgt(1792570200) == T("2026-10-21 16:10")
+    assert freshness.sgt(None) is None

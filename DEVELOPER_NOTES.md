@@ -354,6 +354,8 @@ What "live" means here: every few minutes, `ml.predictions` gains the newest tic
   ```
 
 - **Quota.** Each `flood-live` run starts serverless compute three times (job tasks and the pipeline). If the Free Edition daily quota runs out, everything stops until the next day, and `flood-watchdog`'s email is the sign. Outside demo windows run `live_schedule: "0 0/15 * * * ?"`; for the demo, 5 minutes. A `flood-etl` update takes about 5 minutes (14 Oct), so at a 5-minute cadence about every other run is skipped: predictions arrive roughly every 10 minutes either way.
+- **Read times as epoch seconds.** `collect()` returns a TIMESTAMP in the driver's zone (UTC on serverless) whatever the session time zone, so the first live run (21 Oct) read 16:10 SGT as 08:10 and scored a tick 8 hours old. `freshness.sgt` converts; `toPandas()` does follow the session time zone.
+- **First live run, 21 Oct:** the 16:25 SGT tick scored for all 47 areas with features, 4.8 min behind the clock, with `dev_eugenehengruizhe_floodsense v1` (`@champion`); `flood-watchdog` reported live.
 - **Check it:**
 
   ```sql
@@ -627,7 +629,7 @@ FROM flood_dev.dev_<you>_gold.tide_datum GROUP BY ALL;
 SELECT year(ts), source, count(*), round(stddev(surge_m), 3) AS surge_sd FROM flood_dev.dev_<you>_gold.tide_levels GROUP BY ALL ORDER BY 1, 2;
 ```
 
-The fit and the predictions run in pandas through applyInPandas (`daisi_team_master_corgis_floodsense/tides.py`, pickled by value like the label modules): the fit on one task (about 4 s), the predictions one SGT month per task. Adding the two columns changes `contract.MODEL_FEATURES`, so a saved `GatedPair` from before them refuses to load: retrain (`flood-train`) after `flood-gold` has run. The rater may only rise with `tide_height_m`, and a tide phrase in a reason ("high tide in 25 min") only ever follows a weather phrase.
+The fit and the predictions run in pandas on the driver (`daisi_team_master_corgis_floodsense/tides.py`): one fit of 166k hours (about 4 s) and 746k rows of predictions, made 10,000 minutes per utide call. Not as Python UDFs: on serverless (21 Oct) the fit as an applyInPandas ran out of worker memory, and the per-month predictions as an applyInPandas wrote 0 rows without an error, which left `tide_levels` empty and `model_rows` with no rows. Check `gold.tide_levels` is non-empty after a change here. A pair records its inputs, so one saved before the tide columns still loads; retrain (`flood-train`) after `flood-gold` to use them. The rater may only rise with `tide_height_m`, and a tide phrase in a reason ("high tide in 25 min") only ever follows a weather phrase.
 
 What the tide adds: `flood-train` refits the chosen pair without each group in `--compare-without` (job parameter `compare_without`, default `tide`; groups in `contract.FEATURE_GROUPS`) and logs the comparison to the run (`without_tide_comparison.json`, `without_tide_*` metrics; `ml/compare.py`). Until the workspace is reachable, `explorations/tide_ablation_local.py` runs the same comparison on landed files with one island-wide area: on 21 Oct, over 2021–2024, the tide gave a small, consistent edge (ROC-AUC +0.0004; at a 5% warning budget 98.9% of 89 events flagged before PUB against 95.5%, McNemar p ≥ 0.125). Alerts were more common at low tide, so the `RISING` constraint on `tide_height_m` should go. Full write-up in `DEMO_DAY_NOTES.md`.
 

@@ -5,9 +5,10 @@ low waters, so every later tide comes from the model. Its heights are metres abo
 datum offset measured against NEA's table (metres above Chart Datum). UHSLC's zero sat 0.012 m below NEA's datum on
 2026-10-20, and the fitted predictions matched NEA's high and low waters within 0.11 m and 19 minutes.
 
-Plain pandas and numpy, so tests run without Spark. The gold pipeline runs `fit_frame` and `predict_frame` with
-applyInPandas; their times are epoch seconds (UTC), so no result depends on a session time zone. utide is imported
-only where it is used, so silver (whose pipeline doesn't install it) can read the constants.
+Plain pandas and numpy, so tests run without Spark. The gold pipeline runs `fit_frame` on the driver (utide's fit holds
+every hour by every constituent, more than a serverless Python worker allows) and `predict_frame` with applyInPandas.
+Times are epoch seconds (UTC), so no result depends on a session time zone. utide is imported only where it is used, so
+silver (whose pipeline doesn't install it) can read the constants.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ LATITUDE = 1.2622  # Tanjong Pagar, UHSLC station 699
 FIT_START = date(2005, 1, 1)
 MISSING_MM = -32767  # UHSLC's fill value
 STEP_S = 60  # predictions are made each minute, so a high or low water is timed to the minute
+PREDICT_BLOCK = 10_000  # times per utide.reconstruct call (about 11 MB of complex values at 68 constituents)
 
 TICK, HIGH, LOW = "tick", "high", "low"
 # gold.tide_datum expects each NEA high or low water within these of the model's (0.11 m and 19 min, 2026-10-20)
@@ -90,10 +92,18 @@ def from_json(text: str):
 
 
 def predict(coef, seconds) -> np.ndarray:
-    """Predicted heights (m above UHSLC's zero) at epoch seconds."""
+    """Predicted heights (m above UHSLC's zero) at epoch seconds, PREDICT_BLOCK at a time: utide builds a matrix of
+    every time by every constituent, and a month of minutes at once outgrew a serverless Python worker."""
     import utide
 
-    return utide.reconstruct(_datetimes(seconds), coef, verbose=False).h
+    times = _datetimes(seconds)
+    return np.concatenate(
+        [
+            utide.reconstruct(times[i : i + PREDICT_BLOCK], coef, verbose=False).h
+            for i in range(0, len(times), PREDICT_BLOCK)
+        ]
+        or [np.empty(0)]
+    )
 
 
 def extremes(seconds: np.ndarray, heights: np.ndarray) -> pd.DataFrame:

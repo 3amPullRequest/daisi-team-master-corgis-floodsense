@@ -6,13 +6,14 @@ UHSLC's gauge ends in December 2023 and has gaps before that, so gold.tide_level
 prediction plus the gauge's surge interpolated between two hourly readings, and the prediction alone in the gaps and
 from 2024 on. `source` says which. The models read `predicted_m` only (contract.py says why).
 
-The fit and the predictions run in pandas (tides.py, with utide) through applyInPandas: the fit on one task, the
-predictions a month per task. Times cross into pandas as epoch seconds.
+The fit and the predictions run in pandas on the driver (tides.py, with utide): as Python UDFs, the fit ran out of
+worker memory and the predictions came back empty on serverless. Both are small: one fit, 746k rows of predictions. Times cross into pandas as epoch seconds.
 """
 
 from datetime import date
 from itertools import pairwise
 
+import pandas as pd
 from pyspark import pipelines as dp
 from pyspark.sql import Window
 from pyspark.sql import functions as F
@@ -35,7 +36,17 @@ FIT_START_S = (
 # From the first rain readings to the end of next year, so live scoring always finds its tick.
 START = C.TIDE_START
 END = date(date.today().year + 2, 1, 1)
-SPAN_COLUMNS = "start_s long, end_s long, tick_s long"
+
+
+def _gauge_hours():
+    """The valid hours the model is fitted on, as pandas (166k rows, a few MB). The fit runs on the driver: utide's fit
+    outgrew a serverless Python worker (UDF OOM)."""
+    return (
+        spark.read.table(silver(spark, "tide_gauge_hourly"))
+        .where(F.col("sea_level_m").isNotNull() & (seconds("ts") >= FIT_START_S))
+        .select(seconds("ts").alias("ts_s"), "sea_level_m")
+        .toPandas()
+    )
 
 
 def _month_spans() -> list[tuple[int, int, int]]:
@@ -62,12 +73,7 @@ def _month_spans() -> list[tuple[int, int, int]]:
     }
 )
 def tide_model():
-    gauge = (
-        spark.read.table(silver(spark, "tide_gauge_hourly"))
-        .where(F.col("sea_level_m").isNotNull() & (seconds("ts") >= FIT_START_S))
-        .select(seconds("ts").alias("ts_s"), "sea_level_m", F.lit(0).alias("fit"))
-    )
-    fitted = gauge.groupBy("fit").applyInPandas(T.fit_frame, T.FIT_COLUMNS)
+    fitted = spark.createDataFrame(T.fit_frame(_gauge_hours()), T.FIT_COLUMNS)
     return fitted.select(
         F.timestamp_seconds("fit_start_s").alias("fit_start"),
         F.timestamp_seconds("fit_end_s").alias("fit_end"),
@@ -90,12 +96,17 @@ def tide_model():
     cluster_by=["ts_s"],
 )
 def tide_predictions():
-    spans = spark.createDataFrame(_month_spans(), SPAN_COLUMNS)
-    model = spark.read.table("tide_model").select("coef_json")
-    return (
-        spans.crossJoin(model)
-        .groupBy("start_s")
-        .applyInPandas(T.predict_frame, T.PREDICTION_COLUMNS)
+    # On the driver, from silver: the same deterministic fit as tide_model (so no read of it inside this update), then
+    # a month at a time. 746k rows. As a per-month applyInPandas over tide_model this wrote 0 rows on serverless.
+    gauge = _gauge_hours()
+    coef_json = T.to_json(T.fit(gauge["ts_s"], gauge["sea_level_m"]))
+    spans = pd.DataFrame(_month_spans(), columns=["start_s", "end_s", "tick_s"])
+    frames = [
+        T.predict_frame(span.assign(coef_json=coef_json))
+        for _, span in spans.groupby("start_s")
+    ]
+    return spark.createDataFrame(
+        pd.concat(frames, ignore_index=True), T.PREDICTION_COLUMNS
     )
 
 

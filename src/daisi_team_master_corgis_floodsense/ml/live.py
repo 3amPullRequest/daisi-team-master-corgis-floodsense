@@ -25,6 +25,7 @@ import re
 import pandas as pd
 
 from .. import features as FT
+from ..freshness import sgt
 from . import contract as C
 from .baseline import RainfallRule
 
@@ -108,9 +109,12 @@ def live_model(full_name: str, short_name: str, experiment: str):
     return rule.name, rule.predict
 
 
-def newest(spark, sql: str):
-    row = spark.sql(sql).collect()
-    return None if not row or row[0][0] is None else pd.Timestamp(row[0][0])
+def newest(spark, table: str, column: str, where: str = "TRUE") -> pd.Timestamp | None:
+    """The newest `column` of `table`, naive SGT (read as epoch seconds: freshness.sgt says why)."""
+    row = spark.sql(
+        f"SELECT unix_timestamp(max({column})) FROM {table} WHERE {where}"
+    ).collect()
+    return sgt(row[0][0]) if row else None
 
 
 def feature_rows(
@@ -169,9 +173,9 @@ def main(argv: list[str] | None = None) -> int:
 
     name, predict = live_model(full_name, args.model, args.experiment)
     now = pd.Timestamp.now(tz="Asia/Singapore").tz_localize(None)
-    reading = newest(spark, f"SELECT max(ts) FROM {silver}.rainfall_5min")
+    reading = newest(spark, f"{silver}.rainfall_5min", "ts")
     scored = (
-        newest(spark, f"SELECT max(ts) FROM {table} WHERE model = '{name}'")
+        newest(spark, table, "ts", f"model = '{name}'")
         if spark.catalog.tableExists(table)
         else None
     )

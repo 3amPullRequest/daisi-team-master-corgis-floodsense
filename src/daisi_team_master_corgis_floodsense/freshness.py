@@ -31,6 +31,18 @@ log = logging.getLogger(__name__)
 LIMITS_MIN = {"tick": 20, "core sources": 20, "rain reading": 30, "prediction": 30}
 
 
+def sgt(epoch_s) -> pd.Timestamp | None:
+    """Naive SGT from epoch seconds. Times are read as epoch seconds because collect() hands back a TIMESTAMP in the
+    driver's own zone (UTC on serverless), whatever the session time zone says: read naively, 16:10 SGT became 08:10."""
+    if epoch_s is None or pd.isna(epoch_s):
+        return None
+    return (
+        pd.Timestamp(int(epoch_s), unit="s", tz="UTC")
+        .tz_convert("Asia/Singapore")
+        .tz_localize(None)
+    )
+
+
 def problems(
     now: pd.Timestamp, newest: dict[str, pd.Timestamp | None], limits=LIMITS_MIN
 ) -> list[str]:
@@ -52,16 +64,16 @@ def newest_times(
 ) -> dict[str, pd.Timestamp | None]:
     core = ", ".join(f"'{s}'" for s in CORE_SOURCES)
     queries = {
-        "tick": f"SELECT max(fetched_at) FROM {bronze}.ingest_heartbeat",
+        "tick": f"SELECT unix_timestamp(max(fetched_at)) FROM {bronze}.ingest_heartbeat",
         # a tick counts when every core source in it answered
         "core sources": f"""
-            SELECT max(fetched_at) FROM (
+            SELECT unix_timestamp(max(fetched_at)) FROM (
               SELECT h.fetched_at, count_if(r.value:ok::boolean) AS ok, count(*) AS n
               FROM {bronze}.ingest_heartbeat AS h, LATERAL variant_explode(h.payload:results) AS r
               WHERE r.value:source::string IN ({core}) GROUP BY h.fetched_at
             ) WHERE ok = n AND n = {len(CORE_SOURCES)}""",
-        "rain reading": f"SELECT max(ts) FROM {silver}.rainfall_5min",
-        "prediction": f"SELECT max(ts) FROM {ml}.predictions",
+        "rain reading": f"SELECT unix_timestamp(max(ts)) FROM {silver}.rainfall_5min",
+        "prediction": f"SELECT unix_timestamp(max(ts)) FROM {ml}.predictions",
     }
     out = {}
     for name, sql in queries.items():
@@ -70,7 +82,7 @@ def newest_times(
         except Exception as exc:  # noqa: BLE001 - a missing table is an answer: nothing landed there yet
             log.warning("%s: %s", name, exc)
             value = None
-        out[name] = None if value is None else pd.Timestamp(value)
+        out[name] = sgt(value)
     return out
 
 

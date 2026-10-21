@@ -4,19 +4,35 @@
 
 **Question.** Gold now gives the model the predicted tide at Tanjong Pagar for every 5-minute tick (`gold.tide_levels` → `gold.area_features.tide_height_m` and `minutes_to_high_tide`). Do these two inputs help the gated LightGBM pair warn of PUB alerts earlier, or are they noise?
 
-**Method.** We fit the same model twice on the same rows and change only the inputs: once with the tide and once with the tide group (`contract.FEATURE_GROUPS["tide"]`) dropped (`gated.Settings(drop=...)`). Both fits are judged out of fold on the same scoreboard over the development period, 27 Oct 2021 to 31 Dec 2024. We compare them three ways:
+**Method.** We fit the same model twice on the same rows and change only the inputs: once with the tide and once with the tide group (`contract.FEATURE_GROUPS["tide"]`) dropped (`gated.Settings(drop=...)`). Both fits are judged out of fold on the same scoreboard, and the PUB events are paired one to one across the two fits.
 
-- threshold-free scores of the alert probability;
-- PUB events flagged before PUB's own alert, with each fit warning on the same share of ticks;
-- the same events paired one to one across the two fits.
+### The answer: per-area, on gold (`flood-train`, Databricks, 21 Oct 2026)
 
-We ran each comparison with three seeds.
+`flood-train` refits the chosen pair without the tide in a nested MLflow run (`compare_without=tide`). It used all 47 areas, 12.3 million training area-ticks (`gold.model_rows`, split `train`) and the development period 27 Oct 2021 to 19 Dec 2025, with 5 blocked day-folds. Both fits use gate recall 0.9 and the rule's false-alarm budget (0.84 per area-month).
 
-> **Status: a laptop stand-in, not the final answer.** The team workspace wasn't reachable, so these numbers come from `explorations/tide_ablation_local.py` on landed files. It runs the production model and scoreboard code, but with two simplifications:
-> - **One island-wide "area".** Placing alerts in NEA's 47 areas needs silver's gazetteer, so here the label is "a PUB alert anywhere in Singapore in the next hour".
-> - **A plain 10-minute reading lag.** Gold also holds a reading back until NEA has published it; the stand-in doesn't.
->
-> The answer to quote on Demo Day is the per-area run on gold: `databricks bundle run train -t dev -p flood_dev`, which now compares with and without the tide by default. It is still pending workspace access.
+| Out of fold, 227 judged PUB events on 105 days | With tide | Without tide | Difference |
+|---|---|---|---|
+| PUB events flagged before PUB's own alert | **20.7%** (95% CI 15.9–26.4%) | 17.2% (12.8–22.6%) | **+3.5 pts** |
+| Mean lead before PUB's alert (misses count 0) | 4.9 min | 4.6 min | +0.3 min (95% CI −0.9 to +1.5) |
+| False alarms per area-month | 0.79 | 0.72 | +0.06 (both within the 0.84 budget) |
+| Hours under a warning per area-month | 1.19 | 1.08 | +0.11 |
+| Area-ticks the gate passes | 12.5% | 11.0% | +1.6 pts |
+
+- **Paired events:** 35 events were flagged early by both fits, 12 only with the tide and 4 only without it. That leans towards the tide but falls just short of the usual significance bar (exact McNemar p = 0.077).
+- **What the model leans on:** the tide took 10% of the rater's gain and 7% of the gate's.
+- **Against the bar:** the with-tide pair beats the rainfall rule (20.7% flagged early against 9.7%, 4.9 min lead against 0.9, at 0.79 false alarms against 0.84). It is registered as version 1, `@challenger` and `@champion`, and `flood-live` now scores with it.
+- **Flash floods:** only 1 flood event could be judged in the development period (30 fell in missing label windows), so this comparison says nothing about High.
+
+**Reading.** Per area, the tide helps the model catch more storms early (+3.5 points, 16 discordant events splitting 12 to 4) for slightly more warning time. The evidence is suggestive, not conclusive: p = 0.077, and the lead interval includes 0. It agrees with the laptop stand-in below, which used one island-wide area and found the same direction.
+
+### Supporting evidence: the laptop stand-in (before workspace access)
+
+These numbers come from `explorations/tide_ablation_local.py` on landed files, run before the workspace was reachable. It runs the production model and scoreboard code, but with two simplifications, so treat it as a cross-check of the per-area result above:
+
+- **One island-wide "area".** Placing alerts in NEA's 47 areas needs silver's gazetteer, so here the label is "a PUB alert anywhere in Singapore in the next hour".
+- **A plain 10-minute reading lag.** Gold also holds a reading back until NEA has published it; the stand-in doesn't.
+
+Its development period is 27 Oct 2021 to 31 Dec 2024, and each comparison ran with three seeds, compared three ways: threshold-free scores, events flagged at a fixed share of warned ticks, and paired events.
 
 ### Data (stand-in)
 
@@ -45,13 +61,13 @@ We ran each comparison with three seeds.
 - **What the model leans on:** the tide took 14–18% of the rater's gain, almost all of it through `minutes_to_high_tide`. `tide_height_m` got 0.3%.
 - **The tide's link to alerts runs the other way from expected.** Alerts were twice as common at the lowest tide quartile as at the highest: 1.01% against 0.48% of ticks. They were also highest at the lowest quartile within the 12:00–20:00 storm hours alone: 2.3% against 1.0–1.4% for the other three. That is an association, not proof of a cause; the season or the hour may be what links them.
 
-**Reading.** Over 2021–2024 the tide gives a small, consistent edge in ranking and a few extra storms caught early at a fixed warning budget. The edge is well inside the noise of 89 events.
+**Reading (stand-in).** Over 2021–2024 the tide gives a small, consistent edge in ranking and a few extra storms caught early at a fixed warning budget. The edge is well inside the noise of 89 events.
 
 ### What this means for feature selection
 
-1. **Keep `minutes_to_high_tide`.** The model uses it and it never made the results worse. Re-judge it on the per-area run in `flood-train`.
-2. **Remove the "risk only rises with tide height" constraint on `tide_height_m`** (`gated.RISING`). The data show alerts more common at *low* tide, so the constraint stops the model using height at all, which is why it got 0.3% of the gain. Refit without the constraint before deciding whether height stays.
-3. **Promote a with-tide model only if the per-area run agrees.** It must flag more events before PUB within the rule's false-alarm budget (the `beats_rule` check). If it doesn't, train with `compare_without=tide` and keep the simpler pair.
+1. **Keep the tide group.** Per area, on gold, it adds 3.5 points of PUB events caught early within the false-alarm budget, and the stand-in agrees on direction. The champion now in production reads it.
+2. **Remove the "risk only rises with tide height" constraint on `tide_height_m`** (`gated.RISING`). The stand-in found alerts more common at *low* tide (1.01% of ticks in the lowest quartile against 0.48% in the highest), so the constraint may stop the model using height at all. Refit without it and compare with `compare_without=tide` again.
+3. **Re-judge on more events before quoting a firm number.** The per-area result is p = 0.077 on 227 events. The single look at the 2026 test split (`score_test=true`) adds independent events, and each later `flood-train` run logs the same comparison automatically.
 
 ### How Databricks made this comparison possible
 
