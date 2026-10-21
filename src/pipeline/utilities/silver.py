@@ -7,7 +7,7 @@ parsers as Spark UDFs, and the hand-kept seed files in data/static/.
 - Reading bronze. Bronze rows hold the API's JSON as a VARIANT, and `get` and `get_ts` read a typed field from it, or
   NULL when it is missing or of another type, never an error. `in_singapore` and `distance_km` are the coordinate
   check (a box around the island and its islets) and the haversine distance (as labels/locations.haversine_km) that
-  silver uses to place points.
+  silver uses to place points; the distance is defined in the floodsense package's features.py, which flood-live shares.
 - The floodsense parsers. `parse_alert`, `location_key`, `name_match` and `svy21_to_wgs84` are the pure-Python
   functions of the labels package wrapped as UDFs, so Spark reads alerts exactly as the fetchers and tests do. Their
   modules are registered with cloudpickle to travel by value: the executors can't import this repository's package.
@@ -23,6 +23,9 @@ from pyspark import cloudpickle
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F
 
+from daisi_team_master_corgis_floodsense.features import (  # noqa: F401  (silver and gold import it from here)
+    distance_km,
+)
 from daisi_team_master_corgis_floodsense.labels import alert_text, locations
 
 # The UDFs' code travels with them (pickled by value), so the executors don't need src/ on their path.
@@ -59,15 +62,6 @@ def get_ts(path: str, column: str = "payload") -> Column:
 
 def in_singapore(lat: str = "lat", lon: str = "lon") -> str:
     return f"{lat} {SG_BOUNDS[0]} AND {lon} {SG_BOUNDS[1]}"
-
-
-def distance_km(lat1: Column, lon1: Column, lat2: Column, lon2: Column) -> Column:
-    """Haversine, as locations.haversine_km."""
-    p1, p2 = F.radians(lat1), F.radians(lat2)
-    h = F.pow(F.sin((p2 - p1) / 2), 2) + F.cos(p1) * F.cos(p2) * F.pow(
-        F.sin(F.radians(lon2 - lon1) / 2), 2
-    )
-    return F.lit(2 * 6371.0088) * F.asin(F.sqrt(h))
 
 
 # --- the floodsense parsers, as UDFs ----------------------------------------------------------------------------------

@@ -84,6 +84,10 @@ API_SOURCES: tuple[ApiSource, ...] = (
     ),
 )
 API_SOURCES_BY_NAME = {s.name: s for s in API_SOURCES}
+# What live scoring can't do without: the models read rain and the 2-hour forecast every tick (the tide is predicted
+# ahead). A live tick fails only when one of these fails; the rest are recorded in the heartbeat and left to the daily
+# repair, so one flaky source doesn't mark every flood-live run failed.
+CORE_SOURCES = ("nea_rainfall", "nea_two_hr_forecast")
 RADAR = "nea_radar_70km"
 
 

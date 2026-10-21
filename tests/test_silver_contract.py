@@ -63,6 +63,11 @@ def test_weather_and_land_use_read_bronze_tables():
     assert set(MASTER_PLANS) <= set(JSON_TABLES)
 
 
+def test_gold_reads_the_weather_variables_silver_keeps():
+    # features.tick_weather pivots on C.WEATHER_READINGS; the package can't import the pipeline's utilities
+    assert tuple(WEATHER_VARIABLES) == C.WEATHER_READINGS
+
+
 def test_weather_bounds_keep_every_reading_of_2021_2024():
     assert set(WEATHER_EXTREMES_2021_2024) == set(WEATHER_VARIABLES)
     for variable, (lowest, highest) in WEATHER_EXTREMES_2021_2024.items():

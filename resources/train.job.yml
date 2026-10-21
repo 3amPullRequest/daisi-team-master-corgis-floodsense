@@ -2,6 +2,7 @@
 # Catalog (src/daisi_team_master_corgis_floodsense/ml/train.py). Manual: it refreshes gold first, then trains.
 #   databricks bundle run train -t dev -p flood_dev
 #   databricks bundle run train -t dev -p flood_dev --params score_test=true   # the single look at the test split
+#   databricks bundle run train -t dev -p flood_dev --params compare_without=tide,forecast   # what each group adds
 resources:
   jobs:
     train:
@@ -13,6 +14,8 @@ resources:
           default: "0.85,0.9,0.95"   # the gate levels to try; the out-of-fold scoreboard picks one
         - name: score_test
           default: "false"
+        - name: compare_without
+          default: "tide"   # feature groups (contract.FEATURE_GROUPS) to refit the pair without and compare; "" for none
       tasks:
         - task_key: refresh_gold
           pipeline_task:
@@ -40,6 +43,8 @@ resources:
               - "{{job.parameters.gate_recalls}}"
               - --score-test
               - "{{job.parameters.score_test}}"
+              - --compare-without
+              - "{{job.parameters.compare_without}}"
       environments:
         - environment_key: ml
           spec:

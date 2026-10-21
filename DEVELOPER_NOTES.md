@@ -73,7 +73,7 @@ The bronze fetchers are written, tested and deployed to dev (see [Ingestion (bro
     - [ ] Radar starts on 2026-07-01, so a model trained on 2025 can't use it: archive it only for now (**Stretch**). Lightning starts on 2025-02-01, so it covers the last 10½ months of training (Feb–Dec 2025) and all of the test; it reaches silver as `silver.lightning_strikes`.
 - [ ] Tides
     - [x] NEA tide table, scraped daily (this month and next); UHSLC Tanjong Pagar hourly, 1984–2023.
-    - [ ] Run the `uhslc` task, then check its row count and the `-32767` gaps. **W1**
+    - [ ] Run the `uhslc` task, then check its row count and the `-32767` gaps. **W1** Landed locally on 20 Oct: 350,632 hours (1984-01-01 to 2023-12-31 15:00 GMT), 12,386 of them `-32767`, almost all before 2016.
 - [ ] Static layers
     - [x] `fetch_static.py`: URA MP2019 and MP2025 land use, PUB water-level sensors, flood-prone area (ha), SLA vertical-control benchmarks.
     - [x] Run the `static` task, and confirm each `static_*` table holds one `version`: landed on 10 Oct, one version each (checked 15 Oct). **W1**
@@ -109,10 +109,10 @@ Silver is built (14 Oct) up to the labels and the two core feature sources, and 
     - [x] `silver.lightning_strikes`: one row per strike (time to the millisecond, place, `C` cloud to cloud or `G` cloud to ground), from the API; NEA's lightning starts on 1 Feb 2025. Deduplicated on (ts, lat, lon, type), since a record lists some strikes twice. Empty until the backfill reaches lightning (15 Oct). **W2**
     - [x] `silver.forecasts_2h` (area, issued at, published at, valid window, category), with NEA's code and an ordinal `rain_class` (0–5) for the categories. Joins use only forecasts with `updated_at` before the tick. 4,140,371 rows, every category known.
         - [ ] Forecasts NEA issued from 1 Jan to about 7 May 2025 all carry 8 May 2025 (03:51–04:35 UTC) as `update_timestamp`: NEA re-published them in bulk, 100–160 days after issue (2021–2024: 3–9 minutes). Gold uses a forecast only from its `updated_at`, so those four months, the wettest March on record included, are blind for want of forecasts. That, not the backfill, is why most of Jan–Jun 2025 was blind on 15 Oct. Proposed: where `updated_at` is hours after `issued_at`, take the publication time as `issued_at` plus NEA's usual lag (10 minutes covers 99% of 2021–2024), flagged as imputed. Decide before the refit. **W2**
-    - [ ] `silver.tides` **W2**:
-        - [ ] Fit utide once on UHSLC and keep the constituents.
-        - [ ] Predict 5-minute heights from 2025 through 2027.
-        - [ ] Fix the datum offset against NEA's high and low waters, then expect the predicted ones within a set tolerance of NEA's.
+    - [x] Tides (20 Oct; see [Tides](#tides)): `silver.tide_gauge_hourly` and `silver.tide_extremes` clean the two sources, and gold models and imputes:
+        - [x] `gold.tide_model`: utide fitted on UHSLC 2005–2023, constituents kept.
+        - [x] `gold.tide_levels`: a tide at every 5-minute tick, 2021 through next year, imputed from the prediction wherever the gauge is silent.
+        - [x] `gold.tide_datum`: the datum offset against NEA's high and low waters (−0.005 m), with expectations at 0.15 m and 30 min (worst seen: 0.11 m and 19 min).
 - [ ] Silver: labels **W1**
     - [x] `silver.telegram_posts`: one row per `message_id`, archive, wayback and live merged, latest version kept. Columns: category, method (`pattern` or `manual`; `laya` later), pattern, problem, hint, and the locations with their stamps.
         - [x] Stamp to datetime: the posting date, minus a day when the stamp is more than 10 minutes after the posting (posts just after midnight, e.g. ids 1122 and 1290).
@@ -153,7 +153,7 @@ Silver is built (14 Oct) up to the labels and the two core feature sources, and 
             - [ ] antecedent rain (3 h, 24 h) and rain trend;
             - [x] rain 5–20 km away (`rain_nearby_30min_mm`), and the same upwind of the island-wide wind (`rain_upwind_30min_mm`). Of the 661 dry training rows an alert followed (no rain within 5 km in the hour), 76% had rain 5–20 km away, against 15% of quiet dry rows. Upwind is undefined when the mean wind is under 2 knots, which in Nov–Dec 2024 was 42% of the hour before alerts (storm winds point every way), so expect little from it;
             - [x] forecast category and its age (15 Oct);
-            - [ ] tide height and minutes to the next high tide;
+            - [x] tide height and minutes to the next high tide (20 Oct; the predicted tide, see [Tides](#tides));
             - [x] temperature, humidity and wind, island-wide (`air_temp_c`, `rel_humidity_pct`, `wind_u_kn`, `wind_v_kn`; 19 stations can't give 47 areas their own). Known for 98–99% of 2021–2024; 2025–26 fills in as the weather backfill lands;
             - [x] lightning within 10 and 30 km in the last 30 minutes (`lightning_10km_30min`, `lightning_30km_30min`), from Feb 2025; empty until the lightning backfill lands. On 13 Apr 2025 Sembawang had 500 strikes within 10 km at 13:10 with 0.2 mm of rain; PUB's flood alert came at 13:50. In gold, but held back from the models (`contract.HELD_BACK_FEATURES`, 16 Oct): to feed it to them, drop it from there and give it its monotone constraint and reason in `gated.py`;
             - [x] the area context as `gold.area_land_use` (land-use shares per area and plan, by H3 cells). Not a model input: a share is the same at every tick of an area, and the models already read the area;
@@ -166,7 +166,7 @@ Silver is built (14 Oct) up to the labels and the two core feature sources, and 
 - [ ] Pipeline health
     - [ ] A `flood-etl` update has to finish well inside the 5-minute tick. Time it after adding each table, and move heavy rebuilds to `flood-daily` if it doesn't fit. **W1** The first silver build, including the one-off load of 27 million CSV readings, took 4.5 minutes on 14 Oct. A later update with no new readings took about 5 minutes: 2 waiting for and starting serverless compute, and 2.5 running, mostly the label tables (the gazetteer's sensor matching about 30 s, each Python-UDF table a few seconds to start its workers). That leaves no room in a 5-minute tick; options are a separate labels pipeline that `flood-live` refreshes only when new posts land, or a 10-minute cadence. Decide once gold is in. On 15 Oct the update that first built the weather tables (110 million CSV readings) and streamed the whole 2025–26 rain and forecast backfill ran 10.5 minutes (12 with start-up). What the 13 new flows add to a routine update isn't measured yet.
     - [x] Tests: stamp, location and alert parsers against fixtures, plus contract tests that silver's and gold's columns match `contract.py` (`tests/test_silver_contract.py`, `tests/test_gold_contract.py`). **W1**
-    - [x] Gold in its own pipeline, so the 5-minute `flood-etl` updates don't rebuild years of features: the first `flood-gold` build took about 1.5 minutes of running (3.5 with compute start-up). `flood-daily` refreshes it after the repair. With the optional features (16 Oct) a full rebuild runs 3.6 minutes (4.4 with start-up). Live scoring will need the newest tick's features within the tick: compute them from silver with the same definitions, or refresh `flood-gold` in `flood-live` if its updates stay short.
+    - [x] Gold in its own pipeline, so the 5-minute `flood-etl` updates don't rebuild years of features: the first `flood-gold` build took about 1.5 minutes of running (3.5 with compute start-up). `flood-daily` refreshes it after the repair. With the optional features (16 Oct) a full rebuild runs 3.6 minutes (4.4 with start-up). Live scoring computes the newest ticks' features from silver with gold's own definitions (`features.py`, the weather and the rain around the area included since the 21 Oct merge; see [Staying live](#staying-live)).
     - [ ] Feed expectation pass rates from the pipeline event log to the dashboard's health page. **W2**
 
 ### Machine Learning
@@ -179,13 +179,13 @@ Silver is built (14 Oct) up to the labels and the two core feature sources, and 
     - [x] Smoke test on gold, 15 Oct, after geocoding (train split where gold had rain: 27 Oct 2021 – 22 May 2025, as far as the backfill had reached). Medium from `rain_15min_mm` ≥ 17.5, never High: 10.8% of 240 judged alert events flagged before PUB (95% CI 7.5–15.4%), 1.8 min mean lead, 0.83 false alarms per area-month. 160 events were unjudged: 114 next to id gaps (PUB deletes posts mostly during storms), the rest next to the 50 unplaced warnings. Not the real fit yet: that waits for the 2025 rain.
 - [x] `split.py`: `temporal_split` (the 80/20 cut on recorded ticks), 5 blocked day-folds in the development period, a 1-day embargo, and the test kept for a single run.
 - [ ] Setup **W1**
-    - [x] `lightgbm` and `scikit-learn` in `pyproject.toml`; the training job adds `lightgbm` to serverless environment 6, which has scikit-learn and `mlflow-skinny`. Still to add for the tides: `utide`. The spatial work needs neither `shapely` nor `pyproj`: Databricks' H3 and ST functions run on serverless (`h3_polyfillash3`, `st_geomfromgeojson`; checked 15 Oct through Databricks Connect), and SVY21 is converted in `labels/locations.py`.
+    - [x] `lightgbm` and `scikit-learn` in `pyproject.toml`; the training job adds `lightgbm` to serverless environment 6, which has scikit-learn and `mlflow-skinny`. `utide` is in `pyproject.toml` and in `flood-gold`'s environment (20 Oct). The spatial work needs neither `shapely` nor `pyproj`: Databricks' H3 and ST functions run on serverless (`h3_polyfillash3`, `st_geomfromgeojson`; checked 15 Oct through Databricks Connect), and SVY21 is converted in `labels/locations.py`.
     - [x] `resources/train.job.yml` (`flood-train`) and `resources/ml.yml` (the MLflow experiment and the UC registered model), deployed to dev on 15 Oct.
     - [x] Every run logs `split.summary(...)`, and the coverage of each split.
 - [ ] Rule baseline end to end **W1**
     - [x] `flood-train` fits it on the development period and logs its parameters, scoreboard metrics and threshold curve to MLflow, next to the pair.
     - [ ] Write its predictions to `ml.predictions`. `flood-train` writes them for the test split when it scores it (`score_test=true`); live predictions come with the `score` task.
-    - [ ] Add a `score` task to `flood-live`, after `refresh_pipeline`, that scores the newest tick for all 47 areas. The app then runs on the rule in Week 1.
+    - [ ] Add a `score` task to `flood-live`, after `refresh_pipeline`, that scores the newest tick for all 47 areas. The app then runs on the rule in Week 1. Written and tested locally on 21 Oct (`ml/live.py`; see [Staying live](#staying-live)); not yet deployed.
 - [ ] Gated LightGBM pair **W2** (`ml/gated.py`, trained by `flood-train`; first trained 15 Oct on the training time gold could use then, Nov 2021 – Dec 2024)
     - [x] Gate: a LightGBM, not a rain threshold. A third of the training ticks an alert followed had no rain within 5 km yet, so any rain threshold drops the early ticks that give lead time; the gate reads the forecast and the hour too. It trains on every recorded tick (quiet ones subsampled to 5% and weighted back up), and its out-of-fold scores set its threshold: the highest that passes 90% of alert ticks. 15 Oct: it passes 12% of area-ticks and leaves 90% of PUB events catchable. The job tries gate recalls 0.85, 0.9 and 0.95, and the scoreboard picks one.
     - [x] Rater: LightGBM on the ticks the out-of-fold gate passed.
@@ -207,23 +207,23 @@ Silver is built (14 Oct) up to the labels and the two core feature sources, and 
 - [ ] Register and serve **W2**
     - [x] One pyfunc (`ml/serving.py`) holds the gate, rater, calibrator, cut-offs and reasons. Registered in UC as `<catalog>.<ml schema>.floodsense` (dev: `flood_dev.dev_stkinzheng_ml.dev_stkinzheng_floodsense`): every version `@challenger`, and `@champion` when it beats the rule out of fold.
     - [ ] Register the rule too, as the comparison.
-    - [ ] Switch the `flood-live` `score` task to `@champion`. It scores inside the job, with no serving endpoint (Free Edition limits those), and appends `model, area, ts, tier, p_alert, reason`. Cast the feature columns to double first: the model's signature refuses int64.
+    - [ ] Switch the `flood-live` `score` task to `@champion`. It scores inside the job, with no serving endpoint (Free Edition limits those), and appends `model, area, ts, tier, p_alert, reason`. Cast the feature columns to double first: the model's signature refuses int64. Done in code on 21 Oct: `@champion` when it loads, else the newest trained rule; features cast to float64. Not yet deployed.
     - [ ] Live scorekeeping: a daily task scores every live prediction against the alerts that followed, the "keeps score in public" promise.
     - [ ] Storm replay: batch-score one flash-flood day from 22–30 Sep 2026 at every tick, and record how many minutes before PUB's first alert its area turned Medium.
 - [ ] **Stretch:** a separate flash-flood model for High; sea-level-rise scenarios (re-score with tide offsets); upstream-catchment rainfall; radar and lightning features.
 
 ### Analytics and BI
 
-`resources/app.yml`, `dashboard.yml` and `genie.yml`, `src/app/` and `src/dashboards/` are all still empty.
+`resources/app.yml` and `src/app/` hold the FloodSense app (21 Oct; see [The app](#the-app)). `dashboard.yml`, `genie.yml` and `src/dashboards/` are still empty.
 
 - [ ] FloodSense app (a Databricks App, for residents)
-    - [ ] Choose the framework (AppKit, or Python if the team prefers) and deploy a stub to the final demo workspace early, as the guide advises. **W1**
-    - [ ] Map of the 47 areas, coloured by tier from the newest `ml.predictions`, running on the rule baseline. **W1**
-    - [ ] Area panel: tier, `p_alert`, the reason, and actions for drivers, residents and shop owners (fixed templates per tier and audience). **W2**
-    - [ ] Live mode: refreshes every 5 minutes and shows data freshness from `bronze.ingest_heartbeat`. **W2**
-    - [ ] Replay mode: pick a storm, play it tick by tick, and mark PUB's first alert and the moment the area turned Medium. **W2**
-    - [ ] Scoreboard view, plus a line saying FloodSense is an earlier layer on top of PUB's alerts, not a replacement. **W2**
-    - [ ] Works on a phone. **W2**
+    - [ ] Choose the framework (AppKit, or Python if the team prefers) and deploy a stub to the final demo workspace early, as the guide advises. **W1** React + FastAPI, built and run locally against dev on 21 Oct; not yet deployed.
+    - [x] Map of the 47 areas, coloured by tier from the newest `ml.predictions` (the champion pair, else the rule).
+    - [x] Area panel: tier, `p_alert` as plain odds, the reason, the last hour's rain, the tide, and actions for drivers, residents and shop owners (`frontend/src/lib/content.ts`).
+    - [x] Live mode: rechecks every minute, shows when the forecast was made, and says so when it is over 20 minutes old.
+    - [x] Replay mode: storm days after the training data, scored tick by tick by the @champion model in the app, with PUB's alerts and a did-it-warn-first table.
+    - [x] Scoreboard view ("How reliable is it?", from the champion's MLflow run), plus the line that FloodSense is an earlier layer on top of PUB's alerts, not a replacement.
+    - [x] Works on a phone (checked at 375 px).
 - [ ] AI/BI dashboard (for agencies)
     - [ ] Flood-prone trend panel (`gold.flood_prone_trend`, 2022–2025), with the 36 listed locations on a map. **W1**
     - [ ] PUB's re-measured warning time (`gold.pub_lead_times`) against the 30-minute target. **W1**
@@ -233,6 +233,34 @@ Silver is built (14 Oct) up to the labels and the two core feature sources, and 
     - [ ] Tables `silver.area_alerts`, `ml.predictions` and the scoreboard tables, with descriptions, instructions and sample SQL.
     - [ ] Test the exact demo question in advance (e.g. "Which areas had the most false alarms last month?") and keep a screenshot of the answer.
 - [ ] **Stretch:** Telegram push alerts, or a hand-off to PUB's channel.
+
+### The app
+
+`src/app/` is a Databricks App: a React front end (`frontend/`, Vite + TypeScript) served by FastAPI (`backend/`). It reads, through the SQL warehouse:
+
+- `ml.predictions`: the newest tick's tier for every area (the pair over the rule when both scored it), and an area's last hours;
+- `silver.rainfall_5min` with `gold.area_rain_stations`: the wettest gauge within 5 km over the last hour;
+- `gold.tide_levels`: the tide now and the next high water;
+- `bronze.ingest_heartbeat`: when the feed last fetched.
+
+The track record comes from the @champion version's MLflow run (out-of-fold metrics, the rule's, and the without-tide comparison). Replays download the @champion model from Unity Catalog once and score a past day's `gold.area_features` (47 areas × 288 ticks, about 40 s the first time, cached after). They're limited to days from `contract.TEST_START` (20 Dec 2025) on, which the model never trained on. The map's areas are Voronoi cells around NEA's label points clipped to the Master Plan 2019 land-use outline, built once by `src/app/scripts/build_area_map.py` into `frontend/public/areas.geojson`. Address search goes through OneMap; "Use my location" works without it.
+
+Run it locally (Python 3.11, as the Apps runtime):
+
+```bash
+(cd src/app/frontend && npm ci && npm run build)
+pip install -r src/app/requirements.txt
+DATABRICKS_CONFIG_PROFILE=flood_dev DATABRICKS_WAREHOUSE_ID=<warehouse id> FLOODSENSE_SCHEMA_PREFIX=dev_<you>_ \
+  uvicorn backend.main:app --app-dir src/app --port 8000
+```
+
+Deploy: build the front end first (the bundle syncs `frontend/dist`, which git ignores), then `databricks bundle deploy -t dev -p flood_dev` and `databricks bundle run floodsense_app -t dev -p flood_dev`. The bundle gives the app's service principal the warehouse (CAN_USE) and the experiment (CAN_READ). Unity Catalog access is granted separately, once, with the principal's application id:
+
+```sql
+GRANT USE CATALOG ON CATALOG flood_dev TO `<app principal>`;              -- by the catalog's owner
+GRANT USE SCHEMA, SELECT ON SCHEMA flood_dev.dev_<you>_ml TO `<app principal>`;   -- and _silver, _gold, _bronze
+GRANT EXECUTE ON MODEL flood_dev.dev_<you>_ml.dev_<you>_floodsense TO `<app principal>`;
+```
 
 ### Governance (Stretch)
 
@@ -325,7 +353,8 @@ JSON lines are parsed into a VARIANT `payload` column, so query them like `paylo
 
 The egress probe confirmed on 2026-10-10 that Free Edition serverless can reach data.gov.sg, its S3 downloads, t.me, nea.gov.sg and UHSLC. So the fetchers run as jobs:
 
-- **`flood-live`** (`resources/live.job.yml`): every `${var.live_schedule}` (default 5 min), runs `fetch` then `refresh_pipeline`.
+- **`flood-live`** (`resources/live.job.yml`): every `${var.live_schedule}` (default 5 min), runs `fetch`, `refresh_pipeline`, then `score` (the newest ticks into `ml.predictions`; see [Staying live](#staying-live)).
+- **`flood-watchdog`** (`resources/watchdog.job.yml`): hourly, emails the deployer when the live feed or the predictions go stale.
 - **`flood-daily`** (`resources/daily.job.yml`): at 00:30 SGT, re-pulls the last two days in full, so gaps in the live feed get filled.
 - **`flood-backfill`** (`resources/backfill.job.yml`, manual): static layers, Telegram archive, UHSLC and yearly CSVs, then a pipeline refresh.
 
@@ -341,6 +370,41 @@ uv run python src/ingestion/fetch_live.py --landing /Volumes/flood_dev/dev_<you>
 ```
 
 In local mode, also remove the `fetch` task and the schedule from `live.job.yml`.
+
+### Staying live
+
+What "live" means here: every few minutes, `ml.predictions` gains the newest tick for all 47 areas, read by the app and the dashboard. Until 21 Oct the chain stopped at silver: `flood-live` fetched and refreshed `flood-etl`, but nothing scored, and gold refreshed only at night. Now:
+
+| Job | When | What keeps it live |
+|---|---|---|
+| `flood-live` | every `live_schedule` (5 min) | `fetch` (240 s timeout) → `refresh_pipeline` (600 s) → `score` (300 s, one retry). Overlapping runs are skipped, not queued, and the next run catches up: fetch reads the newest 25 records of each source, and score scores every tick since its last, at most 2 hours back. |
+| `flood-daily` | 00:30 SGT | re-pulls the last two days in full, refreshes gold (`area_rain_stations`, `tide_levels`, which score reads). Emails the deployer on failure. |
+| `flood-watchdog` | hourly at :07 | fails, and emails the deployer, when the newest tick, core-source fetch, rain reading or prediction is older than 20/20/30/30 min (`freshness.py`). |
+
+- **`score`** (`ml/live.py`, `src/ml/score_live.py`) computes the newest ticks' features from silver with gold's own functions (`daisi_team_master_corgis_floodsense/features.py`, which `gold/features.py` now calls too), so a live prediction reads exactly what the models learnt from. Checked locally on 21 Oct: over a span of 15 ticks, its rows equal `gold.area_features`' row for row. It scores only ticks whose rain window has reached silver (newest reading + 10 min), so a failed refresh scores nothing rather than a false all-clear, and each tick once. It uses `@champion`, else the rule from the newest `flood-train` run (the `rule` parameter); a pair saved before the tide columns still loads, as a pair records its inputs.
+- **A fetch fails only when a core source fails** (`sources.CORE_SOURCES`: rainfall and the 2-hour forecast, what every tick's features need). Radar, lightning, Telegram and the rest still show `ok: false` in the heartbeat, and `flood-daily` repairs their days, but they no longer mark every `flood-live` run failed.
+- **Turn it on after each deploy.** Dev deploys pause every schedule (`mode: development`), so a redeploy stops the feed until it's unpaused. Unpause `flood-live`, `flood-daily` and `flood-watchdog` in the Jobs UI, or:
+
+  ```bash
+  for name in flood-live flood-daily flood-watchdog; do
+    id=$(databricks jobs list -p flood_dev -o json | jq -r --arg n "$name" '.[] | select(.settings.name | endswith($n)) | .job_id')
+    databricks jobs get $id -p flood_dev -o json | jq '{job_id, new_settings: {schedule: (.settings.schedule + {pause_status: "UNPAUSED"})}}' \
+      | databricks jobs update --json @/dev/stdin -p flood_dev
+  done
+  ```
+
+- **Quota.** Each `flood-live` run starts serverless compute three times (job tasks and the pipeline). If the Free Edition daily quota runs out, everything stops until the next day, and `flood-watchdog`'s email is the sign. Outside demo windows run `live_schedule: "0 0/15 * * * ?"`; for the demo, 5 minutes. A `flood-etl` update takes about 5 minutes (14 Oct), so at a 5-minute cadence about every other run is skipped: predictions arrive roughly every 10 minutes either way.
+- **Read times as epoch seconds.** `collect()` returns a TIMESTAMP in the driver's zone (UTC on serverless) whatever the session time zone, so the first live run (21 Oct) read 16:10 SGT as 08:10 and scored a tick 8 hours old. `freshness.sgt` converts; `toPandas()` does follow the session time zone.
+- **First live run, 21 Oct:** the 16:25 SGT tick scored for all 47 areas with features, 4.8 min behind the clock, with `dev_eugenehengruizhe_floodsense v1` (`@champion`); `flood-watchdog` reported live.
+- **Check it:**
+
+  ```sql
+  SET TIME ZONE 'Asia/Singapore';
+  SELECT model, max(ts) AS newest_tick, count(DISTINCT area) AS areas, timestampdiff(MINUTE, max(ts), current_timestamp()) AS lag_min
+  FROM flood_dev.dev_<you>_ml.predictions WHERE ts > current_timestamp() - INTERVAL 1 DAY GROUP BY model;
+  ```
+
+  `databricks bundle run watchdog -t dev -p flood_dev` runs the same check the hourly job does.
 
 ### One-time setup
 
@@ -455,6 +519,8 @@ Silver runs in the same `flood-etl` pipeline as bronze (`src/pipeline/transforma
 | `location_gazetteer` | alert location: lat/lon, method, area | alerts, hand fixes, API circles, sensors, `bronze.onemap_search` | materialized view |
 | `alerts` | alert location (Telegram or API), placed or not | the above | materialized view |
 | `area_alerts` | **the labels** (`contract.AREA_ALERTS_COLUMNS`): placed alerts, each once | `alerts` | materialized view |
+| `tide_gauge_hourly` | hour at Tanjong Pagar, 1984-2023: sea level (m above UHSLC's zero), null where UHSLC marks it missing | `bronze.uhslc_tanjong_pagar_hourly` | materialized view |
+| `tide_extremes` | NEA high or low water: time (SGT, to the minute), height (m above Chart Datum), each month as NEA last published it | `bronze.nea_tide_timings` | materialized view |
 | `alerts_unplaced` | alert no method could place (the quarantine) | `alerts` | materialized view |
 
 ### Reading PUB's posts
@@ -566,8 +632,11 @@ Gold is its own pipeline, `flood-gold` (`resources/gold.pipeline.yml`, code in `
 | `model_rows` | area × tick whose label and feature windows are both recorded | **what models learn from** (`split = 'train'`) and are tested on (`'test'`) |
 | `area_land_use` | area × Master Plan × land use | the share of the area in each land use, for the app and the dashboard |
 | `flood_prone_trend` | year | PUB's flood-prone hectares and the change from the year before, for the dashboard |
+| `tide_model` | one row: the utide fit on Tanjong Pagar 2005–2023 | constituents, trend, residual, and the fit as JSON |
+| `tide_datum` | NEA high or low water, beside the model's | the datum offset, and how far the model is from NEA |
+| `tide_levels` | tick, 2021 through next year | the tide, imputed where the gauge is silent; `predicted_m` and `minutes_to_high_tide` go to `area_features` |
 
-Two private tables sit behind `area_features`: `gauge_rain` (each gauge's 15/30/60-minute totals at each tick, read for the area's own gauges and for the ones around it) and `area_nearby_rain`.
+Two private tables sit behind `area_features`: `gauge_rain` (each gauge's 15/30/60-minute totals at each tick, read for the area's own gauges and for the ones around it) and `area_nearby_rain`. They, `tick_weather` and `area_features` itself are defined in the floodsense package's `features.py`, which `flood-live`'s score task shares, so a live prediction reads what the models learnt from.
 
 ### Rain features
 
@@ -612,6 +681,44 @@ On 15 Oct, of the training split's 1,180 recorded label days, 763 have features.
 
 On 16 Oct, with the rain and forecast backfill streamed through 14 Oct 2026: the test has features for 289.6 of its 295.4 recorded days (98%, past `train.py`'s 95% bar), and training for 970.5 of 1,180.3. Of training's 200 days blind for want of forecasts, 124 are Jan to 7 May 2025, whose forecasts NEA re-published on 8 May 2025 (the `forecasts_2h` item in the checklist): fixing their publication times would recover them, March 2025 included.
 
+### Tides
+
+The tide comes from one gauge, Tanjong Pagar (UHSLC station 699), and is the same for every area. UHSLC's research-quality record stops at the end of 2023, and NEA publishes only this month's and next month's high and low waters, so `gold.tide_model` fits utide (default constituents, linear trend, nodal corrections) on the 2005–2023 hours, a whole 18.6-year nodal cycle, and predicts every minute from 2021 to the end of next year. On 20 Oct the fit left 8.9 cm of surge (residual std) on a 71 cm tide, M2 0.80 m, S2 0.32 m, K1 0.31 m, O1 0.30 m; it gains 3.4 mm a year. Against NEA's Oct–Nov 2026 table, all 236 high and low waters matched, within 0.11 m (NEA prints 0.1 m) and 19 minutes. UHSLC's zero is 0.005 m below Chart Datum, which `gold.tide_datum` measures again on every update.
+
+`gold.tide_levels.tide_m` is imputed tick by tick, and `source` says how:
+
+- `observed`: the tick is on a valid UHSLC hour (2021–2023);
+- `interpolated`: between two valid hours, the prediction plus the gauge's surge interpolated between them (more accurate than a straight line through the hourly heights, which cuts across the tide's curve);
+- `predicted`: the prediction alone, in the gauge's gaps and on every tick from 2024 on.
+
+**The models read `predicted_m`, not `tide_m`.** No gauge reading arrives live, and none exists after 2023, so a model trained on 2021–2023 surges would lean on an input it never gets when scoring, and live/backfill parity would break. The astronomical tide is known in advance, so `area_features.tide_height_m` and `minutes_to_high_tide` (to the next predicted high water) are honest at every tick. `tide_m` is there for analysis, and for a later surge feature if a live sea-level feed turns up.
+
+First run in a workspace (both sources land in a few seconds, so a laptop is fine; `flood-live` keeps NEA's table fresh after that, and `flood-backfill`'s `uhslc` task does the same as the first line):
+
+```bash
+L=/Volumes/flood_dev/dev_<you>_bronze/landing
+uv run python src/ingestion/backfill.py uhslc --landing $L --profile flood_dev
+uv run python src/ingestion/fetch_live.py --landing $L --profile flood_dev --sources nea_tide_timings
+databricks bundle deploy -t dev -p flood_dev
+databricks bundle run etl -t dev -p flood_dev             # bronze and silver tide tables
+databricks bundle run gold_pipeline -t dev -p flood_dev   # the model, the datum check, tide_levels, area_features
+databricks bundle run train -t dev -p flood_dev           # the pair now reads the tide
+```
+
+```sql
+SET TIME ZONE 'Asia/Singapore';
+SELECT fit_start, fit_end, observations, residual_std_m, slice(constituents, 1, 4) FROM flood_dev.dev_<you>_gold.tide_model;
+-- how far the model is from NEA's table (expect within 0.15 m and 30 min)
+SELECT kind, count(*), max(abs(height_error_m)), max(abs(time_error_min)), any_value(datum_offset_m)
+FROM flood_dev.dev_<you>_gold.tide_datum GROUP BY ALL;
+-- how each year's tide was made
+SELECT year(ts), source, count(*), round(stddev(surge_m), 3) AS surge_sd FROM flood_dev.dev_<you>_gold.tide_levels GROUP BY ALL ORDER BY 1, 2;
+```
+
+The fit and the predictions run in pandas on the driver (`daisi_team_master_corgis_floodsense/tides.py`): one fit of 166k hours (about 4 s) and 746k rows of predictions, made 10,000 minutes per utide call. Not as Python UDFs: on serverless (21 Oct) the fit as an applyInPandas ran out of worker memory, and the per-month predictions as an applyInPandas wrote 0 rows without an error, which left `tide_levels` empty and `model_rows` with no rows. Check `gold.tide_levels` is non-empty after a change here. A pair records its inputs, so one saved before the tide columns still loads; retrain (`flood-train`) after `flood-gold` to use them. The rater may only rise with `tide_height_m`, and a tide phrase in a reason ("high tide in 25 min") only ever follows a weather phrase.
+
+What the tide adds: `flood-train` refits the chosen pair without each group in `--compare-without` (job parameter `compare_without`, default `tide`; groups in `contract.FEATURE_GROUPS`) and logs the comparison to the run (`without_tide_comparison.json`, `without_tide_*` metrics; `ml/compare.py`). Until the workspace is reachable, `explorations/tide_ablation_local.py` runs the same comparison on landed files with one island-wide area: on 21 Oct, over 2021–2024, the tide gave a small, consistent edge (ROC-AUC +0.0004; at a 5% warning budget 98.9% of 89 events flagged before PUB against 95.5%, McNemar p ≥ 0.125). Alerts were more common at low tide, so the `RISING` constraint on `tide_height_m` should go. Full write-up in `DEMO_DAY_NOTES.md`.
+
 ### The split
 
 80% of the recorded label time trains and the last 20% tests, cut at an SGT midnight, with `split.EMBARGO_DAYS` (1) between them. Recorded time, not calendar time, so the months of missing labels in 2021–2024 count for neither side. `split.temporal_split` computed the cut on 15 Oct; it is pinned in `contract.py`, so later data never moves a tick between train and test.
@@ -646,6 +753,8 @@ SELECT * FROM flood_dev.dev_<you>_gold.model_rows WHERE split = 'train';
 -- the ticks to pass as scoreboard.score(..., missing=..., blind=...) and baseline.fit(...)
 SELECT ts FROM flood_dev.dev_<you>_gold.label_ticks WHERE label_window = 'missing';
 SELECT ts FROM flood_dev.dev_<you>_gold.feature_ticks WHERE feature_window = 'missing';
+What the tide adds: `flood-train` refits the chosen pair without each group in `--compare-without` (job parameter `compare_without`, default `tide`; groups in `contract.FEATURE_GROUPS`) and logs the comparison to the run (`without_tide_comparison.json`, `without_tide_*` metrics; `ml/compare.py`). Until the workspace is reachable, `explorations/tide_ablation_local.py` runs the same comparison on landed files with one island-wide area: on 21 Oct, over 2021–2024, the tide gave a small, consistent edge (ROC-AUC +0.0004; at a 5% warning budget 98.9% of 89 events flagged before PUB against 95.5%, McNemar p ≥ 0.125). Alerts were more common at low tide, so the `RISING` constraint on `tide_height_m` should go. Full write-up in `DEMO_DAY_NOTES.md`.
+
 ```
 
 Don't train on `area_labels` rows with `alert_label IS NOT NULL`. Inside a missing window that keeps the alerts that did come back (label 1) but none of the quiet ticks (null), so every lost post would raise the alert rate around it. `model_rows` keeps recorded windows only, alerts and quiet ticks alike, and its expectations fail the update if a missing one gets in.

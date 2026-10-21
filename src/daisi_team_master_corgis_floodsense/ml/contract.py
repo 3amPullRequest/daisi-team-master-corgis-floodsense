@@ -107,6 +107,8 @@ UPWIND_MIN_WIND_KN = 2.0
 # Weather: the mean over NEA's stations of each one's newest reading in the WEATHER_MINUTES ending
 # READING_LAG_MINUTES before the tick, published by the tick. Island-wide, as 19 stations can't give 47 areas their own.
 WEATHER_MINUTES = 5
+# silver.weather_1min's variables (pipeline/utilities/silver_sources.py WEATHER_VARIABLES, which a test keeps equal)
+WEATHER_READINGS = ("air_temp_c", "rel_humidity_pct", "wind_speed_kn", "wind_dir_deg")
 # Lightning: NEA lists strikes in a record every 2 minutes, published about 2 minutes after it closes, from
 # LIGHTNING_START. A tick's window is known only when every record of it exists.
 LIGHTNING_START = date(2025, 2, 1)
@@ -130,6 +132,14 @@ def _lightning_doc(km: int) -> str:
 
 # NEA's 2-hour forecast, as a live fetch at the tick would have had it: the newest one published (updated_at) by ts,
 # while its valid period lasts. rain_class orders the categories (pipeline/utilities/forecast_categories.py).
+# The tide: a harmonic model fitted on UHSLC's hourly sea level at Tanjong Pagar (1984-2023), checked against NEA's
+# high and low waters (gold.tide_datum). The models read the prediction, not the gauge: no gauge reading is available
+# live, and the 2024 onward record has none, so training on observed surges would teach the models an input they never
+# see when scoring. gold.tide_levels keeps the gauge-filled series for analysis.
+TIDE_START = date(
+    2021, 1, 1
+)  # the first SGT day gold.tide_levels fills, with the first rain readings
+
 RAIN_CLASSES = {
     0: "no rain",
     1: "light rain or showers",
@@ -163,6 +173,9 @@ AREA_FEATURES_COLUMNS = {
     "means",
     "wind_v_kn": "its northward component (knots)",
     **{lightning_column(km): _lightning_doc(km) for km in LIGHTNING_RADII_KM},
+    "tide_height_m": "predicted tide at Tanjong Pagar at ts, metres above Chart Datum (gold.tide_levels.predicted_m): "
+    "the astronomical tide, known in advance, so it is the same live and in replays; the same for every area",
+    "minutes_to_high_tide": "minutes from ts to the next predicted high water at Tanjong Pagar",
 }
 # gold.area_features columns the models don't read yet: lightning (16 Oct). To feed it to them, drop it from here and
 # give it its monotone constraint and its reason in gated.py.
@@ -173,7 +186,8 @@ MODEL_FEATURES = tuple(
 )
 # Of those, the ones a tick needs to be modelled or rated: rain near the area and the forecast (gold.feature_ticks).
 # The rest come from sources that can be missing at a tick (weather stations have outages, and their 2025-26 days
-# arrive with the backfill; a calm has no upwind), so they stay null there, and LightGBM reads a null as missing.
+# arrive with the backfill; a calm has no upwind), so they stay null there, and LightGBM reads a null as missing. The
+# tide is predicted for every tick, so it is optional only in name.
 REQUIRED_FEATURES = (
     *(rain_column(w) for w in RAIN_WINDOWS_MINUTES),
     "rain_gauges",
@@ -181,6 +195,14 @@ REQUIRED_FEATURES = (
     "forecast_age_min",
 )
 OPTIONAL_FEATURES = tuple(c for c in MODEL_FEATURES if c not in REQUIRED_FEATURES)
+# Model features by source, so flood-train can fit the pair without a group and measure what it adds.
+FEATURE_GROUPS = {
+    "rain": (*(rain_column(w) for w in RAIN_WINDOWS_MINUTES), "rain_gauges"),
+    "forecast": ("forecast_rain_class", "forecast_age_min"),
+    "nearby": ("rain_nearby_30min_mm", "rain_upwind_30min_mm"),
+    "weather": ("air_temp_c", "rel_humidity_pct", "wind_u_kn", "wind_v_kn"),
+    "tide": ("tide_height_m", "minutes_to_high_tide"),
+}
 
 # Whether a tick's label is known. Its label reads PUB alerts stamped in (ts, ts + HORIZON]; PUB posts an alert at
 # most 35 min after its stamp (Telegram 2021-2026; rounded up here), and the post parser accepts a stamp up to

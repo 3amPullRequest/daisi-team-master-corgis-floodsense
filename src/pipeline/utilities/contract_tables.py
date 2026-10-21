@@ -48,6 +48,8 @@ AREA_FEATURES_TYPES = {
     "wind_u_kn": "DOUBLE",
     "wind_v_kn": "DOUBLE",
     **{C.lightning_column(km): "INT" for km in C.LIGHTNING_RADII_KM},
+    "tide_height_m": "DOUBLE",
+    "minutes_to_high_tide": "DOUBLE",
 }
 AREA_FEATURES_SCHEMA = ddl(C.AREA_FEATURES_COLUMNS, AREA_FEATURES_TYPES)
 

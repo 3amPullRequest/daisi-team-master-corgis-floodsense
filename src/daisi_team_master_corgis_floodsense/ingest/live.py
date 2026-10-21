@@ -22,7 +22,9 @@ leaves the rest to bronze and silver.
   retried after the next tick.
 - --trigger-job runs a Databricks job after each tick, for a laptop that feeds the pipeline.
 
-The exit status is non-zero when any source failed, so a Databricks task shows red.
+A run exits non-zero (failing flood-live's fetch task) only when a core source failed (sources.CORE_SOURCES: the rain
+and the 2-hour forecast, which every prediction reads); the others, the weather and lightning included, are in the
+heartbeat and left to the daily repair.
 """
 
 from __future__ import annotations
@@ -93,6 +95,8 @@ def run_tick(
         runner=runner,
         finished_at=S.iso(S.utcnow()),
         ok=all(r["ok"] for r in results),
+        # every core source this tick fetched answered (S.CORE_SOURCES)
+        core_ok=all(r["ok"] for r in results if r["source"] in S.CORE_SOURCES),
         results=results,
     )
     sink.write_bytes(S.run_path(S.HEARTBEAT, "ticks", started), S.jsonl([heartbeat]))
@@ -267,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
         if args.trigger_job:
             _trigger(sink, args.profile, args.trigger_job)
-        return heartbeat["ok"]
+        return heartbeat["core_ok"]
 
     if not args.every:
         return 0 if tick() else 1

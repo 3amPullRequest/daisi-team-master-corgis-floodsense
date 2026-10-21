@@ -7,6 +7,9 @@ resources:
       catalog: ${var.catalog}
       schema: ${resources.schemas.gold.name}
       serverless: true
+      environment:
+        dependencies:
+          - utide==0.4.0   # gold/tides.py fits the tide model and predicts with it
       root_path: ../src/pipeline
       libraries:
         - glob:

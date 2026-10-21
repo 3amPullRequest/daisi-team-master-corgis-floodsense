@@ -10,9 +10,10 @@
 Wind is averaged as a vector (u eastward, v northward). NEA gives the direction the wind blows from, so the vector
 points the other way. Every mean is of exact decimals, so a rebuild gives the same values however Spark splits the work.
 
-How tick_weather is built. As in gold.area_features' rain, each reading is expanded into the ticks whose window holds it
-(the first tick at or after READING_LAG_MINUTES past its timestamp, and the following ticks that WEATHER_MINUTES
-spans), and dropped from the ticks before NEA published it. At each tick, a station's value for a variable is its
+How tick_weather is built (features.tick_weather, which flood-live's score task shares). As in gold.area_features'
+rain, each reading is expanded into the ticks whose window holds it (the first tick at or after READING_LAG_MINUTES
+past its timestamp, and the following ticks that WEATHER_MINUTES spans), and dropped from the ticks before NEA
+published it. At each tick, a station's value for a variable is its
 newest reading in the window; a mean over the stations then gives the island-wide value, and the number of stations
 behind each mean is kept, so a mean over a few stations can be told from one over nearly all. Wind speed and direction
 are combined into u and v components per station before averaging, because directions can't be averaged as numbers.
@@ -29,7 +30,6 @@ a row exists only where a strike was within the largest radius.
 from pyspark import pipelines as dp
 from pyspark.sql import functions as F
 from utilities.gold import (
-    TICK_S,
     seconds,
     silver,
     tick_at_or_after,
@@ -37,15 +37,11 @@ from utilities.gold import (
     ticks_between,
 )
 from utilities.silver import distance_km
-from utilities.silver_sources import WEATHER_VARIABLES
 
+from daisi_team_master_corgis_floodsense import features as F_
+from daisi_team_master_corgis_floodsense.features import LIGHTNING_S
 from daisi_team_master_corgis_floodsense.ml import contract as C
 
-LAG_S = C.READING_LAG_MINUTES * 60
-# how many ticks' windows hold a reading
-WEATHER_SLOTS = C.WEATHER_MINUTES // C.TICK_MINUTES
-LIGHTNING_S = C.LIGHTNING_MINUTES * 60
-EXACT = "decimal(10,4)"
 # Strikes are binned to a 0.01-degree grid (about 1.1 km) before their distance to each area is measured, so a
 # distance is off by at most 0.8 km.
 GRID_DEG = 0.01
@@ -70,78 +66,9 @@ GRID_DEG = 0.01
     }
 )
 def tick_weather():
-    readings = spark.read.table(silver(spark, "weather_1min")).where(
-        "value IS NOT NULL AND ts IS NOT NULL AND station_id IS NOT NULL"
-    )
-    # slot k: the reading is in the window of the kth tick from the first whose window holds it
-    counted = readings.select(
-        "station_id",
-        "variable",
-        "value",
-        seconds("ts").alias("reading_s"),
-        seconds("published_at").alias("published_s"),
-        F.explode(F.sequence(F.lit(0), F.lit(WEATHER_SLOTS - 1))).alias("slot"),
-    ).withColumn(
-        "tick_s",
-        tick_at_or_after(F.col("reading_s")) + LAG_S + F.col("slot") * TICK_S,
-    )
-    counted = counted.where(
-        F.col("published_s").isNull() | (F.col("published_s") <= F.col("tick_s"))
-    )
-    newest = counted.groupBy("station_id", "variable", "tick_s").agg(
-        F.max_by("value", "reading_s").alias("value")
-    )
-    per_station = (
-        newest.groupBy("station_id", "tick_s")
-        .pivot("variable", list(WEATHER_VARIABLES))
-        .agg(F.first("value"))
-    )
-    speed, blowing_from = F.col("wind_speed_kn"), F.radians("wind_dir_deg")
-    windy = speed.isNotNull() & blowing_from.isNotNull()
-    per_tick = per_station.groupBy("tick_s").agg(
-        F.avg(F.col("air_temp_c").cast(EXACT)).cast("double").alias("air_temp_c"),
-        F.avg(F.col("rel_humidity_pct").cast(EXACT))
-        .cast("double")
-        .alias("rel_humidity_pct"),
-        F.avg(F.when(windy, -speed * F.sin(blowing_from)).cast(EXACT))
-        .cast("double")
-        .alias("wind_u_kn"),
-        F.avg(F.when(windy, -speed * F.cos(blowing_from)).cast(EXACT))
-        .cast("double")
-        .alias("wind_v_kn"),
-        F.count("air_temp_c").alias("temp_stations"),
-        F.count("rel_humidity_pct").alias("humidity_stations"),
-        F.count(F.when(windy, 1)).alias("wind_stations"),
-    )
-    # a record counts for the ticks whose window (t - LIGHTNING_MINUTES, t] holds it
-    record_s = seconds("record_ts")
-    records = (
-        spark.read.table(silver(spark, "lightning_records"))
-        .where("record_ts IS NOT NULL")
-        .select(
-            ticks_between(
-                tick_at_or_after(record_s), tick_before(record_s + LIGHTNING_S)
-            ).alias("tick_s")
-        )
-        .groupBy("tick_s")
-        .agg(F.count("*").alias("lightning_records"))
-    )
-    rows = per_tick.join(records, "tick_s", "full")
-    return rows.select(
-        F.timestamp_seconds("tick_s").alias("ts"),
-        "air_temp_c",
-        "rel_humidity_pct",
-        "wind_u_kn",
-        "wind_v_kn",
-        *(
-            F.coalesce(c, F.lit(0)).cast("int").alias(c)
-            for c in (
-                "temp_stations",
-                "humidity_stations",
-                "wind_stations",
-                "lightning_records",
-            )
-        ),
+    return F_.tick_weather(
+        spark.read.table(silver(spark, "weather_1min")),
+        spark.read.table(silver(spark, "lightning_records")),
     )
 
 

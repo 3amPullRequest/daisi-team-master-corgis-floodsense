@@ -1,0 +1,38 @@
+# The FloodSense app for residents: React (src/app/frontend, built into dist) served by FastAPI (src/app/backend). It
+# reads ml.predictions, the tide and freshness through the SQL warehouse, the model's track record from its MLflow
+# run, and runs the @champion model for storm replays. Build the frontend before deploying:
+#   (cd src/app/frontend && npm ci && npm run build) && databricks bundle deploy -t dev -p flood_dev
+#   databricks bundle run floodsense_app -t dev -p flood_dev   # starts it
+# The app's service principal needs read access to the tables and the model: see "The app" in DEVELOPER_NOTES.md.
+resources:
+  apps:
+    floodsense_app:
+      name: floodsense-${bundle.target}
+      description: Which of Singapore's 47 forecast areas may get a PUB flash-flood alert in the next hour.
+      source_code_path: ../src/app
+      config:
+        command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            value_from: sql-warehouse
+          - name: FLOODSENSE_CATALOG
+            value: ${var.catalog}
+          - name: FLOODSENSE_BRONZE
+            value: ${resources.schemas.bronze.name}
+          - name: FLOODSENSE_SILVER
+            value: ${resources.schemas.silver.name}
+          - name: FLOODSENSE_GOLD
+            value: ${resources.schemas.gold.name}
+          - name: FLOODSENSE_ML
+            value: ${resources.schemas.ml.name}
+          - name: FLOODSENSE_MODEL
+            value: ${resources.registered_models.floodsense.name}
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: training-experiment
+          experiment:
+            experiment_id: ${resources.experiments.training.id}
+            permission: CAN_READ

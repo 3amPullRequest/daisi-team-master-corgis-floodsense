@@ -224,3 +224,9 @@ __marimo__/
 
 # Local ingestion smoke-test landing folder
 .landing-dev/
+
+# FloodSense web app: dependencies and build output
+src/app/frontend/node_modules/
+src/app/frontend/dist/
+src/app/frontend/tsconfig.tsbuildinfo
+.claude/launch.json

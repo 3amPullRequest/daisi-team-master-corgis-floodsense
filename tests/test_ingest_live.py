@@ -123,6 +123,24 @@ def test_a_failing_source_does_not_stop_the_tick(tmp_path):
         and "HttpError" in results["nea_two_hr_forecast"]["error"]
     )
     assert results["nea_rainfall"]["ok"]
+    assert not heartbeat["core_ok"]  # the forecast is a core source: the run fails
+
+
+def test_a_failing_side_source_leaves_the_run_ok(tmp_path):
+    broken = [
+        ("real-time/api/weather", FakeResponse(400, {"errorMsg": "down"}))
+    ] + routes(radar_page())
+    http, *_ = fake_http(broken)
+    heartbeat = run_tick(
+        http,
+        LocalSink(tmp_path),
+        runner="test",
+        now=datetime(2026, 10, 10, 10, 50, tzinfo=UTC),
+    )
+    results = {r["source"]: r for r in heartbeat["results"]}
+    assert not results["nea_lightning"]["ok"] and not heartbeat["ok"]
+    assert heartbeat["core_ok"]  # rain and the forecast came in: live scoring can go on
+    assert set(S.CORE_SOURCES) <= set(results)
 
 
 def test_daily_repair_runs_once_after_half_past_midnight(tmp_path):

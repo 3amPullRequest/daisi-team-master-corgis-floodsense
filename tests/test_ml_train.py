@@ -94,3 +94,13 @@ def test_job_parameters_parse():
     )
     assert args.score_test is True and args.model == C.REGISTERED_MODEL
     assert args.gate_recall == [0.9]
+    assert args.compare_without == ["tide"]  # the job's default
+    args = train._parser().parse_args(
+        ["--catalog", "c", "--experiment", "e", "--compare-without", "tide, forecast"]
+    )
+    assert args.compare_without == ["tide", "forecast"]
+    assert set(args.compare_without) <= set(C.FEATURE_GROUPS)
+    args = train._parser().parse_args(
+        ["--catalog", "c", "--experiment", "e", "--compare-without", ""]
+    )
+    assert args.compare_without == []

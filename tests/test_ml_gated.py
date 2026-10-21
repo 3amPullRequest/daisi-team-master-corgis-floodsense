@@ -30,6 +30,7 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
     """gold.model_rows and silver.area_alerts for the storms."""
     rng = np.random.default_rng(seed)
     ticks = pd.date_range(START, TEST_START, freq="5min", inclusive="left")
+    minutes = np.arange(len(ticks)) * 5.0
     frames, alerts = [], []
     hour = np.asarray(ticks.hour + ticks.minute / 60)
     day_heat = np.sin(np.pi * (hour - 8) / 12).clip(0)
@@ -84,6 +85,9 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
                     "rel_humidity_pct": np.where(landed, 85 - 15 * day_heat, np.nan),
                     "wind_u_kn": np.where(landed, -3.0, np.nan),
                     "wind_v_kn": np.where(landed, 2.0, np.nan),
+                    # a semidiurnal tide (12.42 h), the same everywhere; storms don't follow it here
+                    "tide_height_m": 1.7 + np.cos(2 * np.pi * minutes / 745.2),
+                    "minutes_to_high_tide": (-minutes) % 745.2,
                 }
             )
         )
@@ -195,9 +199,14 @@ def test_predict_ignores_gold_columns_the_models_dont_read(fitted):
     assert not set(C.HELD_BACK_FEATURES) & set(gated.INPUTS)
 
 
-def test_risk_only_rises_with_rain_and_the_forecast():
+def test_risk_only_rises_with_rain_the_forecast_and_the_tide():
     assert gated.RISING <= set(gated.INPUTS)
-    assert {*gated.RAIN, *gated.NEARBY_RAIN, "forecast_rain_class"} == gated.RISING
+    assert {
+        *gated.RAIN,
+        *gated.NEARBY_RAIN,
+        "forecast_rain_class",
+        "tide_height_m",
+    } == gated.RISING
 
 
 def test_reasons_name_rain_further_away():

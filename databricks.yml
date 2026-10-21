@@ -5,6 +5,10 @@ bundle:
 include:
   - resources/*.yml
 
+sync:
+  include:
+    - src/app/frontend/dist/**   # the built web app, which .gitignore keeps out of git
+
 variables:
   catalog:
     description: Unity Catalog catalog for this target
@@ -13,6 +17,10 @@ variables:
   secret_scope:
     description: Secret scope holding the data.gov.sg API key (secret key `datagovsg-api-key`)
     default: floodsense
+  warehouse_id:
+    description: SQL warehouse the app queries
+    lookup:
+      warehouse: Serverless Starter Warehouse
   live_schedule:
     description: Quartz cron for flood-live; every 5 min (use 0/15 outside demo windows to save Free Edition quota)
     default: "0 0/5 * * * ?"

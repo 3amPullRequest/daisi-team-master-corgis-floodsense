@@ -39,11 +39,11 @@ Scoring a row, which is what a saved pair does (`GatedPair.p_alert`, `predict`):
 - `save` and `load` keep the pair as two LightGBM model files and a JSON of everything else, and refuse to load a pair
   saved for different inputs.
 
-Some choices that shape the models: both are small and heavily regularised, because the alert days to learn from are
-few (about 160 in training); the trees are constrained so that the chance of an alert can only rise with the rain, near
-the area and around it, and the forecast class (`RISING`); the quiet rows are subsampled and weighted back up (`_quiet_sample`), so
-ten million rows train quickly without biasing the totals; and every cut-off must lie above the probability of the
-screened-out rows, so that a cut-off cannot become "warn everywhere".
+Some choices that shape the models: both are small and heavily regularised, because the alert days to learn from are few
+(about 160 in training); the trees are constrained so that the chance of an alert can only rise with the rain, near the
+area and around it, the forecast class and the tide (`RISING`); the quiet rows are subsampled and weighted back up
+(`_quiet_sample`), so ten million rows train quickly without biasing the totals; and every cut-off must lie above the
+probability of the screened-out rows, so that a cut-off cannot become "warn everywhere".
 """
 
 from __future__ import annotations
@@ -62,11 +62,17 @@ from .scoreboard import TARGETS, score
 from .split import Split, _sgt
 
 AREA, HOUR = "area", "hour_sgt"
-INPUTS = (AREA, HOUR, *C.MODEL_FEATURES)  # what both models read, in this order
+INPUTS = (
+    AREA,
+    HOUR,
+    *C.MODEL_FEATURES,
+)  # what both models read, in this order (Settings.drop leaves some out)
 RAIN = tuple(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES)
 NEARBY_RAIN = ("rain_nearby_30min_mm", "rain_upwind_30min_mm")
+TIDE = ("tide_height_m", "minutes_to_high_tide")
+HIGH_TIDE_M = 2.5  # above Chart Datum; Tanjong Pagar's high waters run about 2.2-3.2 m (NEA, Oct-Nov 2026)
 # the alert chance may only rise with these
-RISING = {*RAIN, "forecast_rain_class", *NEARBY_RAIN}
+RISING = {*RAIN, "forecast_rain_class", *NEARBY_RAIN, "tide_height_m"}
 
 # Few events (about 160 alert days in training), so both models are small and heavily regularised.
 GATE_PARAMS = {
@@ -113,13 +119,30 @@ class Settings:
     min_high_precision: float = TARGETS["high_precision"]
     cut_off_candidates: int = 60
     seed: int = 0
+    # model features left out, to measure what a group adds (train.py fits the pair with and without each group in
+    # contract.FEATURE_GROUPS that --compare-without names)
+    drop: tuple[str, ...] = ()
+
+    @property
+    def inputs(self) -> tuple[str, ...]:
+        return inputs_without(self.drop)
 
 
 DEFAULTS = Settings()
 
 
-def design(frame: pd.DataFrame, areas: tuple[str, ...]) -> pd.DataFrame:
-    """The models' inputs from gold rows: the area as a category, the SGT hour of day, and the model features."""
+def inputs_without(drop: tuple[str, ...] = ()) -> tuple[str, ...]:
+    unknown = set(drop) - set(C.MODEL_FEATURES)
+    if unknown:
+        raise ValueError(f"not model features: {sorted(unknown)}")
+    return tuple(c for c in INPUTS if c not in drop)
+
+
+def design(
+    frame: pd.DataFrame, areas: tuple[str, ...], inputs: tuple[str, ...] = INPUTS
+) -> pd.DataFrame:
+    """The models' inputs from gold rows: the area as a category, the SGT hour of day, and the model features (those
+    of `inputs`, in its order)."""
     ts = _sgt(frame["ts"])
     columns = {
         AREA: pd.Categorical(frame[AREA], categories=list(areas)),
@@ -127,9 +150,10 @@ def design(frame: pd.DataFrame, areas: tuple[str, ...]) -> pd.DataFrame:
         **{
             c: pd.to_numeric(frame[c]).astype("float32").to_numpy()
             for c in C.MODEL_FEATURES
+            if c in inputs
         },
     }
-    return pd.DataFrame(columns, index=frame.index)[list(INPUTS)]
+    return pd.DataFrame(columns, index=frame.index)[list(inputs)]
 
 
 @dataclass
@@ -145,16 +169,22 @@ class GatedPair:
     quiet_p: float
     medium_p: float
     high_p: float = math.inf
+    inputs: tuple[str, ...] = INPUTS
+
+    @property
+    def features(self) -> list[str]:
+        return [c for c in self.inputs if c in C.MODEL_FEATURES]
 
     @property
     def name(self) -> str:
         return f"gated_lightgbm M>={self.medium_p:.3g} H>={self.high_p:.3g}"
 
     def p_alert(self, frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-        """(passed, p_alert) per row. A row missing a required feature isn't rated: p_alert is NaN, and its tier Low.
-        A missing optional feature (a weather outage, no upwind in a calm) is read as missing."""
-        X = design(frame, self.areas)
-        known = X[list(C.REQUIRED_FEATURES)].notna().all(axis=1).to_numpy()
+        """(passed, p_alert) per row. A row missing a required feature the pair reads isn't rated: p_alert is NaN, and
+        its tier Low. A missing optional feature (a weather outage, no upwind in a calm) is read as missing."""
+        X = design(frame, self.areas, self.inputs)
+        required = [c for c in C.REQUIRED_FEATURES if c in self.features]
+        known = X[required].notna().all(axis=1).to_numpy()
         passed = np.zeros(len(X), dtype=bool)
         if known.any():
             passed[known] = self.gate.predict(X[known]) >= self.gate_threshold
@@ -191,23 +221,33 @@ class GatedPair:
         if not warned.any():
             return reason
         rows = frame[warned]
-        contributions = self.rater.predict(design(rows, self.areas), pred_contrib=True)
+        contributions = self.rater.predict(
+            design(rows, self.areas, self.inputs), pred_contrib=True
+        )
         texts = []
         for row, contribution in zip(rows.to_dict("records"), contributions):
             ranked = np.argsort(-contribution[:-1])  # the last column is the bias
-            phrases = [_phrase(INPUTS[i], row) for i in ranked if contribution[i] > 0]
-            phrases = [p for p in phrases if p][:2]
-            # nothing raised the score on its own (inputs only act together): name the weather anyway
-            weather = (
-                _phrase(c, row) for c in (*RAIN, *NEARBY_RAIN, "forecast_rain_class")
+            raised = [self.inputs[i] for i in ranked if contribution[i] > 0]
+            phrases = [p for p in (_phrase(c, row) for c in raised) if p][:2]
+            # nothing raised the score on its own (inputs only act together): name the weather anyway. The tide only
+            # adds to a reason: a high tide alone never floods a drain.
+            weather = next(
+                (
+                    w
+                    for w in (
+                        _phrase(c, row)
+                        for c in (*RAIN, *NEARBY_RAIN, "forecast_rain_class")
+                    )
+                    if w
+                ),
+                "conditions like those before past PUB alerts",
             )
-            texts.append(
-                "; ".join(phrases)
-                or next(
-                    (w for w in weather if w),
-                    "conditions like those before past PUB alerts",
-                )
-            )
+            tide_only = all(c in TIDE for c in raised if _phrase(c, row))
+            if not phrases:
+                phrases = [weather]
+            elif tide_only:
+                phrases = [weather, phrases[0]]
+            texts.append("; ".join(phrases))
         reason[warned] = texts
         return reason
 
@@ -218,7 +258,7 @@ class GatedPair:
         self.gate.save_model(str(out / "gate.txt"))
         self.rater.save_model(str(out / "rater.txt"))
         settings = {
-            "inputs": list(INPUTS),
+            "inputs": list(self.inputs),
             "areas": list(self.areas),
             "gate_threshold": self.gate_threshold,
             "calibration_x": [float(x) for x in self.calibration_x],
@@ -233,7 +273,9 @@ class GatedPair:
     def load(cls, directory) -> GatedPair:
         src = Path(directory)
         s = json.loads((src / "pair.json").read_text())
-        if tuple(s["inputs"]) != INPUTS:
+        inputs = tuple(s["inputs"])
+        # a pair saved without some features loads; one that reads a feature this code doesn't know can't
+        if inputs != tuple(c for c in INPUTS if c in inputs):
             raise ValueError(
                 f"saved for inputs {s['inputs']}, but this code reads {list(INPUTS)}"
             )
@@ -247,6 +289,7 @@ class GatedPair:
             quiet_p=s["quiet_p"],
             medium_p=s["medium_p"],
             high_p=math.inf if s["high_p"] is None else s["high_p"],
+            inputs=inputs,
         )
 
 
@@ -309,7 +352,7 @@ def fit(
 
     rows = development_rows(rows, split)
     areas = tuple(sorted(rows[AREA].unique()))
-    X = design(rows, areas)
+    X = design(rows, areas, settings.inputs)
     y = rows["alert_label"].to_numpy(dtype=np.int8)
     ts = rows["ts"]
     if not y.any():
@@ -363,6 +406,7 @@ def fit(
         quiet_p=quiet_p,
         medium_p=medium_p,
         high_p=high_p,
+        inputs=settings.inputs,
     )
 
     tier = pair.tiers(p)
@@ -394,7 +438,7 @@ def fit(
     }
     importance = pd.DataFrame(
         {
-            "input": INPUTS,
+            "input": settings.inputs,
             "gate_gain": pair.gate.feature_importance("gain"),
             "rater_gain": pair.rater.feature_importance("gain"),
         }
@@ -576,7 +620,7 @@ def _params(base: dict, settings: Settings) -> dict:
     return {
         **base,
         "seed": settings.seed,
-        "monotone_constraints": [1 if c in RISING else 0 for c in INPUTS],
+        "monotone_constraints": [1 if c in RISING else 0 for c in settings.inputs],
     }
 
 
@@ -630,7 +674,7 @@ def _train(
 
 def _phrase(name: str, row: dict) -> str | None:
     """The app's words for one input of a warned row, or None for inputs that don't make a reason a resident can act
-    on (the hour, gauge counts, forecast age)."""
+    on (the hour, gauge counts, forecast age), or that didn't add to the risk here (a low tide)."""
     value = row.get(name)
     if name in RAIN and value is not None and value >= 1:
         minutes = name.removeprefix("rain_").removesuffix("min_mm")
@@ -644,6 +688,14 @@ def _phrase(name: str, row: dict) -> str | None:
         )
     if name == "forecast_rain_class" and value:
         return f"NEA forecasts {C.RAIN_CLASSES[int(value)]} here"
+    if name == "tide_height_m" and value is not None and value >= HIGH_TIDE_M:
+        return f"the tide is high ({value:.1f} m), so drains empty to the sea slowly"
+    if (
+        name == "minutes_to_high_tide"
+        and value is not None
+        and value <= C.HORIZON_MINUTES
+    ):
+        return f"high tide in {value:.0f} min"
     if name == AREA:
         return f"PUB has often alerted in {row[AREA]} in weather like this"
     return None

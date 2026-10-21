@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -334,6 +334,7 @@ dependencies = [
     { name = "pandas" },
     { name = "requests" },
     { name = "scikit-learn" },
+    { name = "utide" },
 ]
 
 [package.dev-dependencies]
@@ -354,6 +355,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
+    { name = "utide", specifier = ">=0.3.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -853,6 +855,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/15/22/9ee70a2574a4f4599c47dd506532914ce044817c7752a79b6a51286319bc/urllib3-2.5.0.tar.gz", hash = "sha256:3fc47733c7e419d4bc3f6b3dc2b4f890bb743906a30d56ba4a5bfa4bbff92760", size = 393185, upload-time = "2025-06-18T14:07:41.644Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/c2/fe1e52489ae3122415c51f387e221dd0773709bad6c6cdaa599e8a2c5185/urllib3-2.5.0-py3-none-any.whl", hash = "sha256:e6b01673c0fa6a13e374b50871808eb3bf7046c4b125b216f6bf1cc604cff0dc", size = 129795, upload-time = "2025-06-18T14:07:40.39Z" },
+]
+
+[[package]]
+name = "utide"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/4c/9ae7928fa16818363e1f25d720c1699a2310c6d0dc2862e653e86d238969/utide-0.4.0.tar.gz", hash = "sha256:5293fc10d52b37ff8092a2b99c20dbdd84b6a3e30dc8c013e28610491882ce55", size = 74946, upload-time = "2026-09-03T12:39:44.064Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/22/8e/59d4a03b5f647a00604d08e68c6d89ac7551228cc23fa7a80ee5adfedc15/utide-0.4.0-py3-none-any.whl", hash = "sha256:537949945f4ea54a0409f1de19b8af55d5105c2bbdb08b0d879f6dcdb82b1517", size = 75232, upload-time = "2026-09-03T12:39:42.365Z" },
 ]
 
 [[package]]
