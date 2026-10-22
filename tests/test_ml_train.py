@@ -75,6 +75,24 @@ def test_fits_rank_by_events_flagged_then_lead_then_fewer_false_alarms():
     assert train._rank(m(math.nan, 0, 0)) < train._rank(m(0.0, 0, 0.5))
 
 
+def test_a_flood_flagged_counts_flood_weight_times_in_the_rank():
+    def m(alert_share, flood_share):
+        # 20 PUB events, 2 of them flash floods
+        return {
+            "alert_events": 20,
+            "alert_flagged_before_pub": alert_share,
+            "flood_events": 2,
+            "flood_flagged_before_pub": flood_share,
+            "alert_mean_lead_min": 5.0,
+            "false_alarms_per_area_month": 0.8,
+        }
+
+    # one more warning flagged against one more flood flagged
+    warnings, floods = m(0.30, 0.0), m(0.25, 0.5)
+    assert train._rank(warnings) > train._rank(floods)  # unweighted, as before 21 Oct
+    assert train._rank(floods, 10) > train._rank(warnings, 10)
+
+
 def test_job_parameters_parse():
     args = train._parser().parse_args(
         [
@@ -104,3 +122,20 @@ def test_job_parameters_parse():
         ["--catalog", "c", "--experiment", "e", "--compare-without", ""]
     )
     assert args.compare_without == []
+
+
+def test_sweep_parameters_parse():
+    base = ["--catalog", "c", "--experiment", "e"]
+    args = train._parser().parse_args(base)
+    assert (args.flood_weight, args.flood_value, args.area_effect) == (1.0, 10.0, "credibility")
+    assert args.variants == [] and args.register is True
+    args = train._parser().parse_args(
+        [*base, "--variants", "category:1, credibility:25", "--register", "false"]
+        + ["--flood-weight", "5", "--flood-value", "3", "--area-effect", "category"]
+    )
+    assert args.variants == [("category", 1.0), ("credibility", 25.0)]
+    assert args.register is False
+    assert (args.flood_weight, args.flood_value, args.area_effect) == (5.0, 3.0, "category")
+    assert train._parser().parse_args([*base, "--variants", ""]).variants == []
+    with pytest.raises(SystemExit):
+        train._parser().parse_args([*base, "--variants", "categorical:1"])

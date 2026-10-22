@@ -6,23 +6,37 @@ missing interval trains neither. The gate learns from every recorded tick, with 
 learns from the recorded ticks the gate passes.
 
 One target, a PUB alert of either kind within the hour (gold.area_labels.alert_label, as scoreboard.tick_labels counts
-it): the 90% warnings are what Medium is for, and flash floods are too few to learn alone (35 on 20 days in training,
-15 Oct). High is a higher cut-off on the same probability, where enough High warnings are followed by a flood.
+it): the 90% warnings are what Medium is for, and flash floods are too few to learn alone (36 on 20 days in training,
+21 Oct). But a flash flood is what the Round 1 targets are about, so a flood event flagged before PUB counts
+`flood_value` times another event (scoreboard.FLOOD_EVENT_VALUE, 10) when the Medium cut-off is chosen, as when
+train.py compares fits. The rows a flood followed can also weigh more in training (`flood_weight`, in both models, the
+gate's recall and the area prior), but by default they don't: on 22 Oct a weight of 10 cost 12 points of PUB events
+flagged and caught no more floods (DEVELOPER_NOTES, Results). High is a higher cut-off on the same probability, where
+enough High warnings are followed by a flood.
+
+The area is a prior, not a category (`area_effect`, credibility.py): each area's alert rate by Bühlmann-Straub
+credibility, the offset (LightGBM's init_score) both models start from. Read as a category, an area that had never
+alerted was pushed towards a zero chance whatever the rain, and its quiet rows pulled the rain effects down in every
+other area. The prior trusts an area's own history only as far as its exposure and the real spread between areas
+warrant, and the trees learn the weather on top of it. `area_effect="category"` fits the pair as before 21 Oct.
 
 Fitting, on the development period of split.make_split (blocked day-folds, an embargo either side of each block):
 
-1. Gate: LightGBM on every development row, with the quiet rows subsampled and weighted back up. Its out-of-fold
-   scores set its threshold: the highest that still passes `gate_recall` of the rows an alert followed. A third of
-   those had no rain within 5 km yet (gold, 15 Oct): the early ticks of a storm, which only the forecast and the hour
-   tell from a quiet afternoon. So the gate reads every input the rater does.
-2. Rater: LightGBM on the rows the out-of-fold gate passed, risk rising with rain (near the area and around it) and
-   with the forecast.
+1. Gate: LightGBM on every development row, with the quiet rows subsampled and weighted back up and the flood rows
+   weighted up, starting from each row's area prior. Its out-of-fold scores set its threshold: the highest that still
+   passes `gate_recall` of the alert rows' weight. A third of those had no rain within 5 km yet (gold, 15 Oct): the
+   early ticks of a storm, which only the forecast and the hour tell from a quiet afternoon. So the gate reads every
+   input the rater does.
+2. Rater: LightGBM on the rows the out-of-fold gate passed, weighted and started the same way, risk rising with rain
+   (near the area and around it) and with the forecast.
 3. Calibration: centered isotonic regression of the label on the rater's pooled out-of-fold scores. Rows the gate
    screens out get the alert rate of the screened-out rows.
 4. Cut-offs, on the pooled out-of-fold probabilities, judged by scoreboard.score over the development period as
-   baseline.fit judges the rule: Medium flags the most PUB events before PUB within the false-alarm budget; High is the
-   lowest higher cut-off whose High warnings are followed by a flash flood often enough.
-5. Both models are refitted on the whole development period, with the rounds the folds chose.
+   baseline.fit judges the rule: Medium flags the most PUB events before PUB within the false-alarm budget, a flood
+   event counting `flood_value` times (`weighted_flagged`); High is the lowest higher cut-off whose High warnings are
+   followed by a flash flood often enough.
+5. Both models are refitted on the whole development period, with the rounds the folds chose. Every out-of-fold score
+   comes from a prior computed without its own block, so no score reads its own block's alerts through the prior.
 
 The test split is never read here.
 
@@ -30,14 +44,16 @@ Scoring a row, which is what a saved pair does (`GatedPair.p_alert`, `predict`):
 
 - A row missing a required feature isn't rated: its p_alert is NaN and its tier Low. A missing optional feature
   (a weather outage, no upwind in a calm) is passed on as missing, which LightGBM reads as such.
-- The gate scores every other row, and those at or above its threshold go on to the rater. Its raw score is turned into
-  a probability by the calibration, never below the alert rate of the rows the gate screens out. The rows the gate
-  stops get that rate (`quiet_p`).
+- The gate scores every other row, and those at or above its threshold go on to the rater. Both models' scores start
+  from the row's area prior (`area_offsets`; an area the prior hasn't seen gets the island's). The rater's score is
+  turned into a probability by the calibration, never below the alert rate of the rows the gate screens out. The rows
+  the gate stops get that rate (`quiet_p`).
 - `tiers` turns the probability into Low, Medium or High with the two cut-offs, and `reasons` gives each warned row a
-  plain-English reason for the app: the two inputs that raised the rater's score most (its SHAP contributions), in
-  words a resident can act on, or the weather at hand when no single input stands out.
+  plain-English reason for the app: the two inputs that raised the rater's score most (its SHAP contributions, and the
+  area prior beside them), in words a resident can act on, or the weather at hand when no single input stands out.
 - `save` and `load` keep the pair as two LightGBM model files and a JSON of everything else, and refuse to load a pair
-  saved for different inputs.
+  saved for different inputs. A pair saved before 21 Oct (the area as a category, no offsets) loads and scores as it
+  did.
 
 Some choices that shape the models: both are small and heavily regularised, because the alert days to learn from are few
 (about 160 in training); the trees are constrained so that the chance of an alert can only rise with the rain, near the
@@ -58,7 +74,8 @@ import numpy as np
 import pandas as pd
 
 from . import contract as C
-from .scoreboard import TARGETS, score
+from .credibility import area_days, area_offsets, area_prior
+from .scoreboard import FLOOD_EVENT_VALUE, TARGETS, score
 from .split import Split, _sgt
 
 AREA, HOUR = "area", "hour_sgt"
@@ -66,7 +83,10 @@ INPUTS = (
     AREA,
     HOUR,
     *C.MODEL_FEATURES,
-)  # what both models read, in this order (Settings.drop leaves some out)
+)  # what both models can read, in this order (Settings.inputs leaves some out)
+# how the pair reads the area: a Bühlmann-Straub prior as the models' offset, or (before 21 Oct) a category input
+CREDIBILITY, CATEGORY = "credibility", "category"
+AREA_EFFECTS = (CREDIBILITY, CATEGORY)
 RAIN = tuple(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES)
 NEARBY_RAIN = ("rain_nearby_30min_mm", "rain_upwind_30min_mm")
 TIDE = ("tide_height_m", "minutes_to_high_tide")
@@ -106,13 +126,19 @@ RATER_PARAMS = {
 
 @dataclass(frozen=True)
 class Settings:
-    """gate_recall: the share of the rows an alert followed that the gate must pass, out of fold. The quiet shares:
-    how many quiet rows each model trains on, weighted back up. patience: rounds without a better mean out-of-fold
-    loss before the folds stop. max_false_alarms is per area-month, as in baseline.fit."""
+    """gate_recall: the share of the alert rows' weight that the gate must pass, out of fold. The quiet shares: how many
+    quiet rows each model trains on, weighted back up. flood_weight: what a row a flash flood followed weighs against
+    one only a warning followed, in training, in the gate's recall and in the area prior's claims. flood_value: what a
+    flood event flagged before PUB counts when the Medium cut-off is chosen. area_effect: CREDIBILITY (the area prior as
+    both models' offset) or CATEGORY (the area as an input, as before 21 Oct). patience: rounds without a better mean
+    out-of-fold loss before the folds stop. max_false_alarms is per area-month, as in baseline.fit."""
 
     gate_recall: float = 0.9
     gate_quiet_share: float = 0.05
     rater_quiet_share: float = 0.25
+    flood_weight: float = 1.0
+    flood_value: float = FLOOD_EVENT_VALUE
+    area_effect: str = CREDIBILITY
     max_rounds: int = 2000
     patience: int = 100
     max_false_alarms: float = 1.0
@@ -123,19 +149,31 @@ class Settings:
     # contract.FEATURE_GROUPS that --compare-without names)
     drop: tuple[str, ...] = ()
 
+    def __post_init__(self):
+        if self.area_effect not in AREA_EFFECTS:
+            raise ValueError(
+                f"area_effect is one of {AREA_EFFECTS}, not {self.area_effect!r}"
+            )
+        if self.flood_weight < 1 or self.flood_value < 1:
+            raise ValueError(
+                "flood_weight and flood_value are at least 1: a flood weighs no less than a warning"
+            )
+
     @property
     def inputs(self) -> tuple[str, ...]:
-        return inputs_without(self.drop)
+        return inputs_without(self.drop, area=self.area_effect == CATEGORY)
 
 
 DEFAULTS = Settings()
 
 
-def inputs_without(drop: tuple[str, ...] = ()) -> tuple[str, ...]:
+def inputs_without(drop: tuple[str, ...] = (), *, area: bool = True) -> tuple[str, ...]:
+    """INPUTS without the model features in `drop`, and without the area unless `area` (it is an input only when the
+    pair reads it as a category)."""
     unknown = set(drop) - set(C.MODEL_FEATURES)
     if unknown:
         raise ValueError(f"not model features: {sorted(unknown)}")
-    return tuple(c for c in INPUTS if c not in drop)
+    return tuple(c for c in INPUTS if c not in drop and (area or c != AREA))
 
 
 def design(
@@ -158,7 +196,11 @@ def design(
 
 @dataclass
 class GatedPair:
-    """The fitted pair: gate, threshold, rater, calibration and cut-offs. `predict` writes ml.predictions rows."""
+    """The fitted pair: gate, threshold, rater, calibration and cut-offs. `predict` writes ml.predictions rows.
+
+    `area_offsets` is the area prior both models start from (log relative risk per area), and `gate_base` and
+    `rater_base` the log-odds they start from besides; a pair that reads the area as a category has none, and its trees
+    carry their own start, as LightGBM fits them without an init_score."""
 
     areas: tuple[str, ...]
     gate: lgb.Booster
@@ -170,6 +212,10 @@ class GatedPair:
     medium_p: float
     high_p: float = math.inf
     inputs: tuple[str, ...] = INPUTS
+    area_offsets: dict[str, float] | None = None
+    gate_base: float = 0.0
+    rater_base: float = 0.0
+    flood_weight: float = 1.0
 
     @property
     def features(self) -> list[str]:
@@ -179,18 +225,31 @@ class GatedPair:
     def name(self) -> str:
         return f"gated_lightgbm M>={self.medium_p:.3g} H>={self.high_p:.3g}"
 
+    def offsets(self, frame: pd.DataFrame) -> np.ndarray:
+        """Each row's area offset (0 everywhere for a pair without a prior)."""
+        if self.area_offsets is None:
+            return np.zeros(len(frame))
+        return area_offsets(frame[AREA], self.area_offsets)
+
+    def gate_p(self, X: pd.DataFrame, offset: np.ndarray) -> np.ndarray:
+        return _scored(self.gate, X, self.gate_base, offset, self.area_offsets)
+
+    def rater_p(self, X: pd.DataFrame, offset: np.ndarray) -> np.ndarray:
+        return _scored(self.rater, X, self.rater_base, offset, self.area_offsets)
+
     def p_alert(self, frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """(passed, p_alert) per row. A row missing a required feature the pair reads isn't rated: p_alert is NaN, and
         its tier Low. A missing optional feature (a weather outage, no upwind in a calm) is read as missing."""
         X = design(frame, self.areas, self.inputs)
+        offset = self.offsets(frame)
         required = [c for c in C.REQUIRED_FEATURES if c in self.features]
         known = X[required].notna().all(axis=1).to_numpy()
         passed = np.zeros(len(X), dtype=bool)
         if known.any():
-            passed[known] = self.gate.predict(X[known]) >= self.gate_threshold
+            passed[known] = self.gate_p(X[known], offset[known]) >= self.gate_threshold
         p = np.where(known, self.quiet_p, np.nan)
         if passed.any():
-            p[passed] = self.calibrate(self.rater.predict(X[passed]))
+            p[passed] = self.calibrate(self.rater_p(X[passed], offset[passed]))
         return passed, p
 
     def calibrate(self, raw: np.ndarray) -> np.ndarray:
@@ -215,7 +274,8 @@ class GatedPair:
         )
 
     def reasons(self, frame: pd.DataFrame, tier: np.ndarray) -> pd.Series:
-        """Plain English for each warned row: the two inputs that raised the rater's score most (its SHAP values)."""
+        """Plain English for each warned row: the two inputs that raised the rater's score most (its SHAP values, and
+        the area prior beside them when the pair has one)."""
         reason = pd.Series(None, index=frame.index, dtype=object)
         warned = np.asarray(tier) != "Low"
         if not warned.any():
@@ -224,10 +284,17 @@ class GatedPair:
         contributions = self.rater.predict(
             design(rows, self.areas, self.inputs), pred_contrib=True
         )
+        names = list(self.inputs)
+        if self.area_offsets is not None and AREA not in self.inputs:
+            # the prior shifts the score as an input's contribution would: put it beside them, before the bias
+            contributions = np.column_stack(
+                [contributions[:, :-1], self.offsets(rows), contributions[:, -1]]
+            )
+            names.append(AREA)
         texts = []
         for row, contribution in zip(rows.to_dict("records"), contributions):
             ranked = np.argsort(-contribution[:-1])  # the last column is the bias
-            raised = [self.inputs[i] for i in ranked if contribution[i] > 0]
+            raised = [names[i] for i in ranked if contribution[i] > 0]
             phrases = [p for p in (_phrase(c, row) for c in raised) if p][:2]
             # nothing raised the score on its own (inputs only act together): name the weather anyway. The tide only
             # adds to a reason: a high tide alone never floods a drain.
@@ -266,6 +333,12 @@ class GatedPair:
             "quiet_p": self.quiet_p,
             "medium_p": self.medium_p,
             "high_p": None if math.isinf(self.high_p) else self.high_p,
+            "area_offsets": None
+            if self.area_offsets is None
+            else {a: float(v) for a, v in self.area_offsets.items()},
+            "gate_base": self.gate_base,
+            "rater_base": self.rater_base,
+            "flood_weight": self.flood_weight,
         }
         (out / "pair.json").write_text(json.dumps(settings, indent=1))
 
@@ -279,6 +352,7 @@ class GatedPair:
             raise ValueError(
                 f"saved for inputs {s['inputs']}, but this code reads {list(INPUTS)}"
             )
+        # pairs saved before 21 Oct have no prior and no base: their trees carry their own start
         return cls(
             areas=tuple(s["areas"]),
             gate=lgb.Booster(model_file=str(src / "gate.txt")),
@@ -290,6 +364,10 @@ class GatedPair:
             medium_p=s["medium_p"],
             high_p=math.inf if s["high_p"] is None else s["high_p"],
             inputs=inputs,
+            area_offsets=s.get("area_offsets"),
+            gate_base=s.get("gate_base", 0.0),
+            rater_base=s.get("rater_base", 0.0),
+            flood_weight=s.get("flood_weight", 1.0),
         )
 
 
@@ -305,6 +383,7 @@ class Fit:
     curve: pd.DataFrame  # every Medium candidate's out-of-fold scores
     stats: dict[str, float] = field(default_factory=dict)
     importance: pd.DataFrame | None = None
+    area_prior: pd.DataFrame | None = None  # the final models' prior (credibility.AreaPrior.table), if they have one
 
     def predictions(self, *, warned_only: bool = True) -> pd.DataFrame:
         """Out-of-fold (area, ts, tier, p_alert) rows, as scoreboard.score takes them."""
@@ -354,23 +433,34 @@ def fit(
     areas = tuple(sorted(rows[AREA].unique()))
     X = design(rows, areas, settings.inputs)
     y = rows["alert_label"].to_numpy(dtype=np.int8)
+    flood = rows["flood_label"].to_numpy(dtype=np.int8)
     ts = rows["ts"]
     if not y.any():
         raise ValueError("no alerts in the development rows")
+    lift = np.where(flood == 1, settings.flood_weight, 1.0)  # a flood row's weight
+    fold_offsets, prior = _priors(rows, split, settings)
+    offsets = None if prior is None else prior.offsets
 
+    gate_weight = _quiet_weight(y, settings.gate_quiet_share, settings.seed) * lift
     gate_score, gate_rounds = _out_of_fold(
-        X, y, ts, split, GATE_PARAMS, settings.gate_quiet_share, settings
+        X, y, gate_weight, ts, rows[AREA], fold_offsets, split, GATE_PARAMS, settings
     )
-    threshold = recall_threshold(gate_score, y, settings.gate_recall)
+    threshold = recall_threshold(gate_score, y, settings.gate_recall, weight=lift)
     passed = gate_score >= threshold
 
+    rater_weight = (
+        _quiet_weight(y[passed], settings.rater_quiet_share, settings.seed)
+        * lift[passed]
+    )
     raw, rater_rounds = _out_of_fold(
         X[passed],
         y[passed],
+        rater_weight,
         ts[passed],
+        rows[AREA][passed],
+        fold_offsets,
         split,
         RATER_PARAMS,
-        settings.rater_quiet_share,
         settings,
     )
     isotonic = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip").fit(
@@ -387,26 +477,34 @@ def fit(
     medium_p, high_p, curve = cut_offs(
         rows, p, passed, alerts, split, missing=missing, blind=blind, settings=settings
     )
+    gate, gate_base = _train(
+        X, y, gate_weight, rows[AREA], offsets, GATE_PARAMS, gate_rounds, settings
+    )
+    rater, rater_base = _train(
+        X[passed],
+        y[passed],
+        rater_weight,
+        rows[AREA][passed],
+        offsets,
+        RATER_PARAMS,
+        rater_rounds,
+        settings,
+    )
     pair = GatedPair(
         areas=areas,
-        gate=_train(
-            X, y, GATE_PARAMS, gate_rounds, settings.gate_quiet_share, settings
-        ),
+        gate=gate,
         gate_threshold=float(threshold),
-        rater=_train(
-            X[passed],
-            y[passed],
-            RATER_PARAMS,
-            rater_rounds,
-            settings.rater_quiet_share,
-            settings,
-        ),
+        rater=rater,
         calibration_x=calibration_x,
         calibration_y=calibration_y,
         quiet_p=quiet_p,
         medium_p=medium_p,
         high_p=high_p,
         inputs=settings.inputs,
+        area_offsets=offsets,
+        gate_base=gate_base,
+        rater_base=rater_base,
+        flood_weight=settings.flood_weight,
     )
 
     tier = pair.tiers(p)
@@ -421,10 +519,21 @@ def fit(
     stats = {
         "rows": len(rows),
         "alert_rows": int(y.sum()),
+        "flood_rows": int(flood.sum()),
+        "flood_weight": settings.flood_weight,
+        "flood_value": settings.flood_value,
+        "area_prior": float(prior is not None),
         "gate_rounds": gate_rounds,
         "gate_threshold": float(threshold),
         "gate_pass_share": float(passed.mean()),
         "gate_alert_row_recall": float(passed[y == 1].mean()),
+        # what the threshold holds to gate_recall: the alert rows passed, each weighing its lift
+        "gate_weighted_recall": float(
+            np.sum(lift[y == 1] * passed[y == 1]) / np.sum(lift[y == 1])
+        ),
+        "gate_flood_row_recall": float(passed[flood == 1].mean())
+        if flood.any()
+        else math.nan,
         # PUB events the gate leaves the rater a chance to flag before PUB: a passed tick in force at PUB's alert
         "gate_alert_event_recall": gate_only["alert_flagged_before_pub"],
         "gate_flood_event_recall": gate_only["flood_flagged_before_pub"],
@@ -436,6 +545,14 @@ def fit(
         "brier": float(np.mean((p - y) ** 2)),
         "brier_base_rate": float(np.mean((y.mean() - y) ** 2)),
     }
+    if prior is not None:
+        stats |= {
+            # the exposure (recorded days) at which an area's own history gets half the weight
+            "area_prior_k_days": prior.k,
+            "area_prior_credibility_mean": float(prior.table["credibility"].mean()),
+            "area_prior_offset_min": float(prior.table["offset"].min()),
+            "area_prior_offset_max": float(prior.table["offset"].max()),
+        }
     importance = pd.DataFrame(
         {
             "input": settings.inputs,
@@ -452,6 +569,7 @@ def fit(
         curve=curve,
         stats=stats,
         importance=importance,
+        area_prior=None if prior is None else prior.table,
     )
     return pair, report
 
@@ -489,13 +607,31 @@ def usable_alerts(alerts: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     return alerts[np.asarray(keep, dtype=bool)]
 
 
-def recall_threshold(scores: np.ndarray, y: np.ndarray, recall: float) -> float:
-    """The highest threshold that passes (score >= threshold) at least `recall` of the rows with label 1."""
-    positive = np.sort(scores[y == 1])
-    if not len(positive):
+def recall_threshold(
+    scores: np.ndarray, y: np.ndarray, recall: float, weight: np.ndarray | None = None
+) -> float:
+    """The highest threshold that passes (score >= threshold) at least `recall` of the rows with label 1, each row
+    counting its `weight` (a flood row weighs flood_weight; all 1 when None)."""
+    positive = y == 1
+    if not positive.any():
         raise ValueError("no alert rows to set the gate on")
-    dropped = math.floor((1 - recall) * len(positive) + 1e-9)
-    return float(positive[min(dropped, len(positive) - 1)])
+    w = np.ones(len(y)) if weight is None else np.asarray(weight, dtype=float)
+    order = np.argsort(scores[positive], kind="stable")
+    s, w = scores[positive][order], w[positive][order]
+    # the lowest rows may be dropped while their weight stays within (1 - recall) of the total
+    dropped = int(np.sum(np.cumsum(w) <= (1 - recall) * w.sum() + 1e-9))
+    return float(s[min(dropped, len(s) - 1)])
+
+
+def weighted_flagged(metrics: dict[str, float], flood_weight: float) -> float:
+    """The share of PUB events flagged before PUB, a flood event counting `flood_weight` times: once as the PUB event it
+    belongs to and flood_weight - 1 times more as a flood. Without flood events, the plain alert share."""
+    alerts, floods = metrics.get("alert_events", 0), metrics.get("flood_events", 0)
+    a, f = metrics["alert_flagged_before_pub"], metrics.get("flood_flagged_before_pub")
+    extra = (flood_weight - 1.0) * floods
+    if not floods or not extra or f is None or math.isnan(f) or not alerts:
+        return a
+    return (alerts * a + extra * f) / (alerts + extra)
 
 
 def cut_offs(
@@ -511,9 +647,10 @@ def cut_offs(
 ) -> tuple[float, float, pd.DataFrame]:
     """Medium and High cut-offs on out-of-fold probabilities `p` (one per row), as baseline.fit sets the rule's.
 
-    Medium: the cut-off that flags the most PUB alert events before PUB within `max_false_alarms` per area-month; ties
-    go to the longer mean lead, then to fewer warned hours. High: the lowest higher cut-off whose High warnings are
-    followed by a flash flood at least `min_high_precision` of the time, else never. Returns both and the Medium curve.
+    Medium: the cut-off that flags the most PUB alert events before PUB within `max_false_alarms` per area-month, a
+    flood event counting `flood_value` times (`weighted_flagged`); ties go to the longer mean lead, then to fewer
+    warned hours. High: the lowest higher cut-off whose High warnings are followed by a flash flood at least
+    `min_high_precision` of the time, else never. Returns both and the Medium curve.
 
     Every cut-off is above the probability of the rows the gate screens out: calibration floors the passed rows at it,
     and a cut-off there would warn every row, which the scoreboard can't fault (one endless warning per area holds
@@ -551,6 +688,7 @@ def cut_offs(
                 "false_alarms": m["false_alarms_per_area_month"],
                 "warned_hours": m["warned_hours_per_area_month"],
                 "flood_flagged": m["flood_flagged_before_pub"],
+                "weighted_flagged": weighted_flagged(m, settings.flood_value),
                 "row_share": float((p >= c).mean()),
             }
         )
@@ -561,7 +699,7 @@ def cut_offs(
             f"every cut-off raises more than {settings.max_false_alarms} false alarms per area-month"
         )
     best = within.sort_values(
-        ["flagged", "lead_min", "warned_hours"], ascending=[False, False, True]
+        ["weighted_flagged", "lead_min", "warned_hours"], ascending=[False, False, True]
     ).iloc[0]
     medium = float(best["medium_p"])
 
@@ -616,6 +754,12 @@ def _quiet_sample(
     return keep, weight
 
 
+def _quiet_weight(y: np.ndarray, share: float, seed: int) -> np.ndarray:
+    """Each row's training weight from the quiet subsample (`_quiet_sample`), 0 for a row left out of it."""
+    keep, weight = _quiet_sample(y, share, seed)
+    return np.where(keep, weight, 0.0)
+
+
 def _params(base: dict, settings: Settings) -> dict:
     return {
         **base,
@@ -624,36 +768,114 @@ def _params(base: dict, settings: Settings) -> dict:
     }
 
 
+def _priors(
+    rows: pd.DataFrame, split: Split, settings: Settings
+) -> tuple[list[dict[str, float] | None], object | None]:
+    """The area offsets of each fold's models, from that fold's training days only, and the prior of the final models,
+    from the whole development period (credibility.area_prior); Nones when the pair reads the area as a category."""
+    if settings.area_effect != CREDIBILITY:
+        return [None] * len(split.folds), None
+    days = area_days(rows)
+    day = pd.Series(days["day"])
+    weight = settings.flood_weight
+    folds = [
+        area_prior(days[fold.train(day)], flood_weight=weight).offsets
+        for fold in split.folds
+    ]
+    return folds, area_prior(days, flood_weight=weight)
+
+
+def _offsets(area: pd.Series, offsets: dict[str, float] | None) -> np.ndarray:
+    return np.zeros(len(area)) if offsets is None else area_offsets(area, offsets)
+
+
+def _init_base(y: np.ndarray, weight: np.ndarray, offset: np.ndarray) -> float:
+    """The log-odds both models start from besides the area offsets, so that the start matches the weighted alert rate
+    on average. LightGBM doesn't boost from the average when given an init_score (checked, lightgbm 4.7)."""
+    rate = float(np.average(y, weights=weight))
+    return math.log(rate / (1 - rate)) - math.log(
+        float(np.average(np.exp(offset), weights=weight))
+    )
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def _scored(
+    booster: lgb.Booster,
+    X: pd.DataFrame,
+    base: float,
+    offset: np.ndarray,
+    offsets: dict | None,
+    rounds: int | None = None,
+) -> np.ndarray:
+    """A model's probabilities from its trees, its base and the rows' area offsets. A pair without a prior scores as
+    LightGBM does, its trees holding their own start."""
+    if offsets is None and base == 0.0:
+        return booster.predict(X, num_iteration=rounds)
+    return _sigmoid(booster.predict(X, raw_score=True, num_iteration=rounds) + base + offset)
+
+
 def _out_of_fold(
     X: pd.DataFrame,
     y: np.ndarray,
+    weight: np.ndarray,
     ts: pd.Series,
+    area: pd.Series,
+    fold_offsets: list[dict[str, float] | None],
     split: Split,
     params: dict,
-    quiet_share: float,
     settings: Settings,
 ) -> tuple[np.ndarray, int]:
-    """Out-of-fold scores for every row, and the rounds the folds agree on (the best mean validation loss).
+    """Out-of-fold probabilities for every row, and the rounds the folds agree on (the best mean validation loss).
 
-    Each fold trains on its subsampled training rows and scores every row of its block, so the scores cover all rows.
+    `weight` is each row's training weight, 0 for the quiet rows left out of the subsample. Each fold trains on its
+    training rows of the subsample, starting from its own area offsets (`fold_offsets`, computed without its block), and
+    scores every row of its block, so the scores cover all rows. The folds grow in step and stop together, as lgb.cv's
+    do, which can't give a row a different init_score in each fold.
     """
-    keep, weight = _quiet_sample(y, quiet_share, settings.seed)
-    data = lgb.Dataset(X[keep], label=y[keep], weight=weight[keep], free_raw_data=False)
-    result = lgb.cv(
-        _params(params, settings),
-        data,
-        num_boost_round=settings.max_rounds,
-        folds=split.cv(ts[keep]),
-        callbacks=[lgb.early_stopping(settings.patience, verbose=False)],
-        return_cvbooster=True,
-    )
-    boosters = result["cvbooster"]
-    rounds = int(boosters.best_iteration)
+    keep = weight > 0
+    kept = np.flatnonzero(keep)
+    p = _params(params, settings)
+    data = lgb.Dataset(
+        X[keep], label=y[keep], weight=weight[keep], params=p, free_raw_data=False
+    ).construct()
+    boosters, bases = [], []
+    for fold, offsets in zip(split.folds, fold_offsets):
+        offset = _offsets(area, offsets)[kept]
+        train = np.flatnonzero(fold.train(ts)[kept])
+        valid = np.flatnonzero(fold.valid(ts)[kept])
+        # without a prior the offsets are 0 and this is LightGBM's boost_from_average, where lgb.cv's folds started
+        base = _init_base(y[kept][train], weight[kept][train], offset[train])
+        sets = []
+        for idx in (train, valid):
+            part = data.subset(idx).construct()
+            part.set_init_score(base + offset[idx])
+            sets.append(part)
+        booster = lgb.Booster(params=p, train_set=sets[0])
+        booster.add_valid(sets[1], "valid")
+        boosters.append(booster)
+        bases.append(base)
+
+    rounds, best = 0, math.inf
+    for r in range(1, settings.max_rounds + 1):
+        losses = []
+        for booster in boosters:
+            booster.update()
+            losses.append(booster.eval_valid()[0][2])
+        loss = float(np.mean(losses))
+        if loss < best:
+            rounds, best = r, loss
+        elif r - rounds >= settings.patience:
+            break
+
     scores = np.full(len(y), np.nan)
-    for fold, booster in zip(split.folds, boosters.boosters):
+    for fold, booster, base, offsets in zip(split.folds, boosters, bases, fold_offsets):
         block = fold.valid(ts)
         if block.any():
-            scores[block] = booster.predict(X[block], num_iteration=rounds)
+            raw = booster.predict(X[block], raw_score=True, num_iteration=rounds)
+            scores[block] = _sigmoid(raw + base + _offsets(area[block], offsets))
     if np.isnan(scores).any():
         raise ValueError("some development rows fell in no fold's block")
     return scores, rounds
@@ -662,14 +884,23 @@ def _out_of_fold(
 def _train(
     X: pd.DataFrame,
     y: np.ndarray,
+    weight: np.ndarray,
+    area: pd.Series,
+    offsets: dict[str, float] | None,
     params: dict,
     rounds: int,
-    quiet_share: float,
     settings: Settings,
-) -> lgb.Booster:
-    keep, weight = _quiet_sample(y, quiet_share, settings.seed)
-    data = lgb.Dataset(X[keep], label=y[keep], weight=weight[keep])
-    return lgb.train(_params(params, settings), data, num_boost_round=rounds)
+) -> tuple[lgb.Booster, float]:
+    """A model on every row of the subsample (weight > 0), with the rounds the folds chose, and the base it starts from
+    besides the area offsets (`_init_base`)."""
+    keep = weight > 0
+    offset = _offsets(area, offsets)[keep]
+    base = _init_base(y[keep], weight[keep], offset)
+    p = _params(params, settings)
+    data = lgb.Dataset(
+        X[keep], label=y[keep], weight=weight[keep], init_score=base + offset, params=p
+    )
+    return lgb.train(p, data, num_boost_round=rounds), base
 
 
 def _phrase(name: str, row: dict) -> str | None:

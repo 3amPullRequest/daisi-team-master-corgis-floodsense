@@ -34,7 +34,7 @@ Three rules run through all of it:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 N_AREAS = 47  # NEA 2-hour forecast areas (`area_metadata` of the two-hr-forecast API)
 TICK_MINUTES = 5
@@ -139,6 +139,15 @@ def _lightning_doc(km: int) -> str:
 TIDE_START = date(
     2021, 1, 1
 )  # the first SGT day gold.tide_levels fills, with the first rain readings
+# NEA re-published every 2-hour forecast issued from 1 Jan to 8 May 2025 07:30 SGT in one batch, on 8 May 2025 between
+# 11:00 and 13:00 SGT. Their updated_at says when NEA rebuilt its archive, not when a live fetch got them, so every tick
+# of those four months read as having no forecast: 124 training days, with 7 of training's 36 flash floods (21 Oct).
+# Their issue times are NEA's own, so a forecast published in that batch counts from
+# REPUBLISHED_FORECAST_DELAY_MINUTES after its issue: NEA's API published 99% of its other forecasts within 9.6 minutes
+# of issue (silver.forecasts_2h, 2025-26), so the models read them no earlier than a live fetch would have. Forecasts
+# NEA published late for other reasons (its own outages) keep their times.
+FORECASTS_REPUBLISHED_SGT = (datetime(2025, 5, 8, 11, 0), datetime(2025, 5, 8, 13, 0))
+REPUBLISHED_FORECAST_DELAY_MINUTES = 10
 
 RAIN_CLASSES = {
     0: "no rain",

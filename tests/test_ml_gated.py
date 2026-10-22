@@ -1,9 +1,12 @@
+import dataclasses
+import json
 import math
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import pytest
@@ -121,6 +124,8 @@ def fitted():
 def test_the_gate_passes_the_recall_share_and_screens_out_quiet_ticks(fitted):
     _, report = fitted
     s = report.stats
+    # the share is of the alert rows' weight (a flood row weighing flood_weight, 1 by default)
+    assert s["gate_weighted_recall"] >= FAST.gate_recall
     assert s["gate_alert_row_recall"] >= FAST.gate_recall
     assert s["gate_pass_share"] < 0.25  # most ticks are dry under a fair forecast
     assert s["gate_alert_event_recall"] == 1.0
@@ -257,6 +262,124 @@ def test_recall_threshold_keeps_the_share_of_alert_rows():
     assert gated.recall_threshold(scores, y, 1.0) == 0.1
     with pytest.raises(ValueError, match="no alert rows"):
         gated.recall_threshold(scores, np.zeros(7), 0.9)
+
+
+def test_recall_threshold_keeps_a_low_scoring_flood_row():
+    # the lowest alert row is a flood row, weighing 10: dropping it would lose 10 of 14, far beyond 20%
+    scores = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.9])
+    y = np.array([1, 1, 1, 1, 1, 0])
+    weight = np.array([10.0, 1, 1, 1, 1, 1])
+    assert gated.recall_threshold(scores, y, 0.8, weight=weight) == 0.1
+    # a warning row at the bottom still goes, as without weights
+    weight = np.array([1.0, 10, 1, 1, 1, 1])
+    assert gated.recall_threshold(scores, y, 0.9, weight=weight) == 0.2
+
+
+def test_weighted_flagged_counts_a_flood_flood_weight_times():
+    m = {
+        "alert_events": 10,
+        "alert_flagged_before_pub": 0.2,
+        "flood_events": 2,
+        "flood_flagged_before_pub": 0.5,
+    }
+    # (10 x 0.2 + 9 x 2 x 0.5) / (10 + 9 x 2)
+    assert gated.weighted_flagged(m, 10) == pytest.approx(11 / 28)
+    assert gated.weighted_flagged(m, 1) == 0.2
+    assert gated.weighted_flagged({**m, "flood_events": 0, "flood_flagged_before_pub": math.nan}, 10) == 0.2
+
+
+def test_the_area_is_a_credibility_prior_not_an_input(fitted):
+    pair, report = fitted
+    assert gated.AREA not in pair.inputs and pair.area_offsets is not None
+    offsets = pair.area_offsets
+    assert set(offsets) == set(AREAS)
+    # the two areas that never alerted sit below the two that flood, but at a finite prior
+    assert max(offsets[a] for a in ("Changi", "Dover")) < min(offsets[a] for a in FLOOD_PRONE)
+    assert all(np.isfinite(v) for v in offsets.values())
+    prior = report.area_prior.set_index("area")
+    assert (prior.loc[["Changi", "Dover"], "rate"] == 0).all()
+    assert (prior.loc[["Changi", "Dover"], "prior_rate"] > 0).all()
+    assert report.stats["area_prior_k_days"] > 0
+
+
+def test_the_area_as_a_category_still_fits_as_before():
+    pair, report = gated.fit(
+        ROWS, ALERTS, SPLIT, settings=dataclasses.replace(FAST, area_effect=gated.CATEGORY)
+    )
+    assert gated.AREA in pair.inputs and pair.area_offsets is None
+    assert report.area_prior is None
+    warned = pair.predict(ROWS).query("tier != 'Low'")
+    assert warned["area"].isin(FLOOD_PRONE).mean() >= 0.8
+
+
+def test_each_folds_prior_is_set_without_its_own_block():
+    # Bedok's alerts all moved into the first fold's block: that fold's prior has never seen Bedok alert
+    first = SPLIT.folds[0]
+    rows = ROWS.copy()
+    bedok = rows["area"] == "Bedok"
+    rows.loc[bedok & ~first.valid(rows["ts"]), ["alert_label", "flood_label"]] = 0
+    folds, full = gated._priors(rows, SPLIT, FAST)
+    assert full.offsets["Bedok"] > full.offsets["Changi"]  # the whole period has seen Bedok's alerts
+    assert folds[0]["Bedok"] == pytest.approx(folds[0]["Changi"])  # its first fold hasn't
+    assert folds[1]["Bedok"] > folds[1]["Changi"]
+
+
+def test_flood_rows_weigh_flood_weight_in_training():
+    heavy = dataclasses.replace(FAST, flood_weight=10.0)
+    _, weighted = gated.fit(ROWS, ALERTS, SPLIT, settings=heavy)
+    _, unweighted = gated.fit(ROWS, ALERTS, SPLIT, settings=FAST)
+    flood = weighted.rows["flood_label"].to_numpy() == 1
+    assert flood.any()
+    # the same rows, but the flood rows rate higher once they weigh more, and the gate lets them through first
+    assert weighted.p_alert[flood].mean() > unweighted.p_alert[flood].mean()
+    assert weighted.stats["gate_flood_row_recall"] >= weighted.stats["gate_alert_row_recall"]
+    assert weighted.stats["flood_weight"] == 10 and unweighted.stats["flood_weight"] == 1
+    # a flood flagged counts flood_value times in choosing the cut-off either way
+    assert weighted.stats["flood_value"] == unweighted.stats["flood_value"] == 10
+
+
+def test_settings_refuse_an_unknown_area_effect_or_a_light_flood():
+    with pytest.raises(ValueError, match="area_effect"):
+        gated.Settings(area_effect="categorical")
+    with pytest.raises(ValueError, match="flood_weight"):
+        gated.Settings(flood_weight=0.5)
+    with pytest.raises(ValueError, match="flood_value"):
+        gated.Settings(flood_value=0)
+
+
+def test_a_pair_saved_before_the_prior_loads_and_scores_as_it_did(tmp_path):
+    """A registered pair from before 21 Oct: the area as a category, trees fitted without an init_score (so they carry
+    LightGBM's boost_from_average start), and no area_offsets, gate_base or rater_base in its pair.json."""
+    inputs = gated.inputs_without(area=True)
+    X = gated.design(ROWS, tuple(sorted(AREAS)), inputs)
+    y = ROWS["alert_label"].to_numpy()
+    params = {"objective": "binary", "verbosity": -1, "num_leaves": 7}
+    gate = lgb.train(params, lgb.Dataset(X, y), num_boost_round=20)
+    rater = lgb.train(params, lgb.Dataset(X, y), num_boost_round=20)
+    old = gated.GatedPair(
+        areas=tuple(sorted(AREAS)),
+        gate=gate,
+        gate_threshold=0.002,
+        rater=rater,
+        calibration_x=np.array([0.0, 0.5, 1.0]),
+        calibration_y=np.array([0.0, 0.3, 0.9]),
+        quiet_p=0.0001,
+        medium_p=0.05,
+        inputs=inputs,
+    )
+    old.save(tmp_path)
+    saved = json.loads((tmp_path / "pair.json").read_text())
+    for key in ("area_offsets", "gate_base", "rater_base", "flood_weight"):
+        del saved[key]
+    (tmp_path / "pair.json").write_text(json.dumps(saved))
+    again = gated.GatedPair.load(tmp_path)
+    assert again.area_offsets is None and again.gate_base == again.rater_base == 0.0
+    passed, p = again.p_alert(ROWS)
+    # exactly LightGBM's own probabilities, as the pair scored before 21 Oct
+    np.testing.assert_array_equal(passed, gate.predict(X) >= 0.002)
+    np.testing.assert_allclose(
+        p[passed], again.calibrate(rater.predict(X[passed])), rtol=0, atol=0
+    )
 
 
 def test_usable_alerts_are_those_the_rows_can_learn_from():

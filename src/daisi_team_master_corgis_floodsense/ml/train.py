@@ -10,10 +10,20 @@ What it reads, every value point-in-time and none of it from a missing interval:
 - silver.area_alerts: PUB's alerts, which the scoreboard judges against.
 
 What it logs to one MLflow run: the split and its folds; how much of each split the models can use; the rule's fit;
-the pair's fit (one nested run per gate recall tried, the scoreboard picking one); both scored by scoreboard.score over
-the development period, the pair out of fold; and whether the pair beats the rule: more lead time at no more false
-alarms (its Medium cut-off is held to the rule's false-alarm rate). The pair is registered as @challenger, and as
-@champion as well when it beats the rule.
+the pair's fit (one nested run per gate recall and variant tried, the scoreboard picking one); both scored by
+scoreboard.score over the development period, the pair out of fold; and whether the pair beats the rule: more lead time
+at no more false alarms (its Medium cut-off is held to the rule's false-alarm rate). The pair is registered as
+@challenger, and as @champion as well when it beats the rule; --register false logs it without registering, for
+experiments.
+
+The sweep (--gate-recall, --variants): every gate recall is tried with the pair as --area-effect and --flood-weight
+set it, and with each extra variant ("area_effect:flood_weight", e.g. "category:1" for the pair as it was before 21
+Oct). Each fit is a nested run, and `sweep.json` sets them side by side: the gate's pass share and recalls, the cut-offs,
+the out-of-fold events flagged (a flood counting --flood-value times, as `_rank` ranks the fits and each fit chooses its
+Medium cut-off), lead and false alarms, and the best each fit flags at 2 and 4 false alarms per area-month, which shows
+how much the false-alarm budget alone holds the pair back. --flood-weight is how much a flood row weighs in training
+(1 by default: 10 cost 12 points of events and caught no more floods, 22 Oct); --flood-value what a flood flagged is
+worth in choosing (scoreboard.FLOOD_EVENT_VALUE).
 
 With --compare-without (default 'tide'), it refits the chosen pair without each named group of
 contract.FEATURE_GROUPS, in a nested run per group, and logs what the group adds: the headline metrics side by side, the
@@ -31,9 +41,9 @@ The order of work in `main`:
    (`gated.usable_alerts`), so no fold is made of days without rows.
 3. Fit the rule first. Its false-alarm rate sets the budget the pair's Medium cut-off may use, so that the comparison
    asks for more lead time at no more false alarms.
-4. Fit the pair, once for each gate recall asked for, each a nested MLflow run scored out of fold by the same
-   scoreboard as the rule. The fit that flags the most events before PUB wins, then the longer lead, then fewer false
-   alarms (`_rank`).
+4. Fit the pair, once for each gate recall and variant asked for, each a nested MLflow run scored out of fold by the
+   same scoreboard as the rule. The fit that flags the most events before PUB wins (a flood event counting
+   --flood-value times), then the longer lead, then fewer false alarms (`_rank`).
 5. Judge and register. The verdict is logged, the winner is logged as a pyfunc model (`log_model`, with serving.py and
    this package's source) and, unless --model is empty, registered. A registered pair gets the challenger alias, and the
    champion alias too if it beats the rule.
@@ -45,6 +55,7 @@ The order of work in `main`:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import math
 import tempfile
@@ -56,7 +67,7 @@ import pandas as pd
 
 from . import baseline, compare, gated
 from . import contract as C
-from .scoreboard import score
+from .scoreboard import FLOOD_EVENT_VALUE, score
 from .split import make_split
 
 log = logging.getLogger(__name__)
@@ -69,6 +80,8 @@ RULE_FLOOR_MM = min(
     baseline.THRESHOLDS_MM
 )  # rows with less rain are Low under every rule candidate
 MIN_TEST_COVERAGE = 0.95  # share of the test's recorded label time that must have features before it is scored
+# looser false-alarm budgets (per area-month) at which sweep.json reports what each fit would flag
+LOOSER_BUDGETS = (2.0, 4.0)
 PREDICTIONS_TYPES = {
     "model": "STRING",
     "area": "STRING",
@@ -176,43 +189,63 @@ def main(argv: list[str] | None = None) -> int:
         )
         mlflow.log_param("false_alarm_budget", round(budget, 4))
 
-        tried = []
-        for recall in args.gate_recall:
-            with mlflow.start_run(run_name=f"gate recall {recall:g}", nested=True):
-                pair, fitted = gated.fit(
-                    rows,
-                    alerts,
-                    split,
-                    missing=missing,
-                    blind=blind,
-                    settings=gated.Settings(
-                        gate_recall=recall, max_false_alarms=budget
-                    ),
+        # only the best fit so far is kept, so a long sweep holds no more than two fits of ten million rows at once
+        best, sweep = None, []
+        for effect, weight in [(args.area_effect, args.flood_weight), *args.variants]:
+            for recall in args.gate_recall:
+                settings = gated.Settings(
+                    gate_recall=recall,
+                    max_false_alarms=budget,
+                    flood_weight=weight,
+                    flood_value=args.flood_value,
+                    area_effect=effect,
                 )
-                board = score(fitted.predictions(), **judge)
-                metrics = board.metrics()
-                mlflow.log_param("gate_recall", recall)
-                _log_metrics("pair", fitted.stats)
-                _log_metrics("oof", metrics)
-                mlflow.log_table(fitted.curve, "medium_curve.json")
-                log.info(
-                    "gate recall %g: %s",
-                    recall,
-                    {
-                        k: fitted.stats[k]
-                        for k in ("gate_pass_share", "medium_p", "high_p")
-                    },
-                )
-                tried.append((_rank(metrics), recall, pair, fitted, board, metrics))
-        _, recall, pair, fitted, board, oof = max(tried, key=lambda t: t[0])
+                name = f"{effect}, flood x{weight:g}, gate recall {recall:g}"
+                with mlflow.start_run(run_name=name, nested=True):
+                    pair, fitted = gated.fit(
+                        rows,
+                        alerts,
+                        split,
+                        missing=missing,
+                        blind=blind,
+                        settings=settings,
+                    )
+                    board = score(fitted.predictions(), **judge)
+                    metrics = board.metrics()
+                    mlflow.log_params(
+                        {"gate_recall": recall, "area_effect": effect, "flood_weight": weight}
+                    )
+                    _log_metrics("pair", fitted.stats)
+                    _log_metrics("oof", metrics)
+                    mlflow.log_table(fitted.curve, "medium_curve.json")
+                    if fitted.area_prior is not None:
+                        mlflow.log_table(fitted.area_prior, "area_prior.json")
+                row = sweep_row(settings, fitted, metrics, args.flood_value)
+                sweep.append(row)
+                log.info("%s: %s", name, row)
+                rank = _rank(metrics, args.flood_value)
+                if best is None or rank > best[0]:
+                    best = (rank, settings, pair, fitted, board, metrics)
+                del pair, fitted, board
+        _, chosen, pair, fitted, board, oof = best
+        mlflow.log_table(pd.DataFrame(sweep), "sweep.json")
 
-        mlflow.log_param("gate_recall", recall)
+        mlflow.log_params(
+            {
+                "gate_recall": chosen.gate_recall,
+                "area_effect": chosen.area_effect,
+                "flood_weight": chosen.flood_weight,
+                "flood_value": chosen.flood_value,
+            }
+        )
         _log_metrics("pair", fitted.stats)
         _log_metrics("oof", oof)
         mlflow.log_table(fitted.curve, "medium_curve.json")
         mlflow.log_table(fitted.reliability(), "reliability.json")
         mlflow.log_table(fitted.importance, "importance.json")
         mlflow.log_table(_dated(board.events), "oof_events.json")
+        if fitted.area_prior is not None:
+            mlflow.log_table(fitted.area_prior, "area_prior.json")
         verdict = {
             # lead before PUB's first alert, misses counting 0, over every judged PUB event
             "beats_rule_lead": oof["alert_mean_lead_min"]
@@ -240,12 +273,14 @@ def main(argv: list[str] | None = None) -> int:
 
         for group in args.compare_without:
             compare_without(
-                group, rows, alerts, split, judge, missing, blind, recall, budget,
+                group, rows, alerts, split, judge, missing, blind, chosen,
                 fitted, board, oof,
             )  # fmt: skip
 
         full_name = (
-            f"{args.catalog}.{args.ml_schema}.{args.model}" if args.model else None
+            f"{args.catalog}.{args.ml_schema}.{args.model}"
+            if args.model and args.register
+            else None
         )
         info = log_model(pair, dev, fitted, full_name)
         version = info.registered_model_version if full_name else None
@@ -318,14 +353,14 @@ def compare_without(
     judge,
     missing,
     blind,
-    recall,
-    budget,
+    chosen,
     fitted,
     board,
     oof,
 ) -> pd.DataFrame:
-    """Refit the pair without one feature group, at the chosen gate recall and false-alarm budget, in a nested run, and
-    log the comparison to the parent run (metrics prefixed without_<group>_)."""
+    """Refit the pair without one feature group, with the chosen fit's settings (gate recall, false-alarm budget, area
+    effect, flood weight), in a nested run, and log the comparison to the parent run (metrics prefixed
+    without_<group>_)."""
     import mlflow
 
     drop = C.FEATURE_GROUPS[group]
@@ -336,13 +371,13 @@ def compare_without(
             split,
             missing=missing,
             blind=blind,
-            settings=gated.Settings(
-                gate_recall=recall, max_false_alarms=budget, drop=drop
-            ),
+            settings=dataclasses.replace(chosen, drop=drop),
         )
         without_board = score(without.predictions(), **judge)
         without_oof = without_board.metrics()
-        mlflow.log_params({"gate_recall": recall, "dropped": ",".join(drop)})
+        mlflow.log_params(
+            {"gate_recall": chosen.gate_recall, "dropped": ",".join(drop)}
+        )
         _log_metrics("pair", without.stats)
         _log_metrics("oof", without_oof)
         mlflow.log_table(without.importance, "importance.json")
@@ -535,6 +570,38 @@ def _parser() -> argparse.ArgumentParser:
         help="comma-separated gate recalls to try; the out-of-fold scoreboard picks one",
     )
     parser.add_argument(
+        "--flood-weight",
+        type=float,
+        default=gated.DEFAULTS.flood_weight,
+        help="what a row a flash flood followed weighs against a warning's in training (default %(default)s)",
+    )
+    parser.add_argument(
+        "--flood-value",
+        type=float,
+        default=FLOOD_EVENT_VALUE,
+        help="what a flood flagged before PUB counts against another event, in ranking the fits and choosing each "
+        "one's Medium cut-off (default %(default)s)",
+    )
+    parser.add_argument(
+        "--area-effect",
+        choices=gated.AREA_EFFECTS,
+        default=gated.DEFAULTS.area_effect,
+        help="the area as a credibility prior (the models' offset) or as a category input (default %(default)s)",
+    )
+    parser.add_argument(
+        "--variants",
+        type=_variants,
+        default=[],
+        help="comma-separated extra fits to compare at every gate recall, each area_effect:flood_weight (e.g. "
+        "'category:1' for the pair as it was before 21 Oct); empty for none",
+    )
+    parser.add_argument(
+        "--register",
+        type=lambda text: text.strip().lower() != "false",
+        default=True,
+        help="'false' to log the chosen pair without registering it (experiments)",
+    )
+    parser.add_argument(
         "--compare-without",
         type=lambda text: [g.strip() for g in text.split(",") if g.strip()],
         default=["tide"],
@@ -550,17 +617,91 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _rank(metrics: dict[str, float]) -> tuple[float, ...]:
-    """How fits are compared: events flagged before PUB, then lead, then fewer false alarms (cut-offs keep every fit
-    within the false-alarm budget)."""
+def _rank(metrics: dict[str, float], flood_weight: float = 1.0) -> tuple[float, ...]:
+    """How fits are compared: events flagged before PUB (a flood event counting `flood_weight` times,
+    gated.weighted_flagged), then lead, then fewer false alarms (cut-offs keep every fit within the false-alarm
+    budget)."""
     return tuple(
         np.nan_to_num(x, nan=-math.inf)
         for x in (
-            metrics["alert_flagged_before_pub"],
+            gated.weighted_flagged(metrics, flood_weight),
             metrics["alert_mean_lead_min"],
             -metrics["false_alarms_per_area_month"],
         )
     )
+
+
+def _variants(text: str) -> list[tuple[str, float]]:
+    """'category:1,credibility:10' as [(area_effect, flood_weight), ...]."""
+    out = []
+    for part in (p.strip() for p in text.split(",")):
+        if not part:
+            continue
+        effect, _, weight = part.partition(":")
+        if effect not in gated.AREA_EFFECTS or not weight:
+            raise argparse.ArgumentTypeError(
+                f"a variant is area_effect:flood_weight with area_effect one of {gated.AREA_EFFECTS}, not {part!r}"
+            )
+        out.append((effect, float(weight)))
+    return out
+
+
+def sweep_row(
+    settings: gated.Settings, fitted: gated.Fit, metrics: dict, flood_weight: float
+) -> dict[str, float]:
+    """One fit of the sweep, for sweep.json: its settings, what its gate passes, its cut-offs, its out-of-fold
+    scoreboard, and the best its Medium curve flags at the looser false-alarm budgets."""
+    s = fitted.stats
+    row = {
+        "area_effect": settings.area_effect,
+        "flood_weight": settings.flood_weight,
+        "gate_recall": settings.gate_recall,
+        **{
+            k: s.get(k, math.nan)
+            for k in (
+                "gate_pass_share",
+                "gate_alert_row_recall",
+                "gate_flood_row_recall",
+                "gate_alert_event_recall",
+                "gate_flood_event_recall",
+                "gate_rounds",
+                "rater_rounds",
+                "medium_p",
+                "high_p",
+                "brier",
+                "brier_base_rate",
+            )
+        },
+        **{
+            k: metrics.get(k, math.nan)
+            for k in (
+                "alert_events",
+                "alert_flagged_before_pub",
+                "alert_mean_lead_min",
+                "false_alarms_per_area_month",
+                "flood_events",
+                "flood_flagged_before_pub",
+                "high_warnings",
+                "high_precision",
+            )
+        },
+        "weighted_flagged": gated.weighted_flagged(metrics, flood_weight),
+    }
+    curve = fitted.curve
+    for fa in LOOSER_BUDGETS:
+        within = curve[curve["false_alarms"] <= fa]
+        top = (
+            within.sort_values(["flagged", "lead_min"], ascending=False).iloc[0]
+            if len(within)
+            else None
+        )
+        row[f"flagged_at_{fa:g}_false_alarms"] = (
+            math.nan if top is None else float(top["flagged"])
+        )
+        row[f"lead_min_at_{fa:g}_false_alarms"] = (
+            math.nan if top is None else float(top["lead_min"])
+        )
+    return {k: (float(v) if isinstance(v, (int, float, np.floating, np.integer)) else v) for k, v in row.items()}
 
 
 def _missing_ticks(spark, table: str, window_column: str) -> pd.Series:

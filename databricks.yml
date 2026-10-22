@@ -17,6 +17,9 @@ variables:
   secret_scope:
     description: Secret scope holding the data.gov.sg API key (secret key `datagovsg-api-key`)
     default: floodsense
+  app_name:
+    description: The app's name, unique per workspace and not prefixed in dev mode; set your own when sharing one (BUNDLE_VAR_app_name, or .databricks/bundle/dev/variable-overrides.json)
+    default: floodsense-${bundle.target}
   warehouse_id:
     description: SQL warehouse the app queries
     lookup:

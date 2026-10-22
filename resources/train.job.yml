@@ -3,6 +3,9 @@
 #   databricks bundle run train -t dev -p flood_dev
 #   databricks bundle run train -t dev -p flood_dev --params score_test=true   # the single look at the test split
 #   databricks bundle run train -t dev -p flood_dev --params compare_without=tide,forecast   # what each group adds
+#   a sweep, logged and compared in sweep.json, registering nothing (one --params per key, as values hold commas):
+#   databricks bundle run train -t dev -p flood_dev --params gate_recalls=0.8,0.9,0.95,0.99,1 \
+#     --params variants=category:1,credibility:1 --params register=false --params compare_without=
 resources:
   jobs:
     train:
@@ -12,6 +15,16 @@ resources:
       parameters:
         - name: gate_recalls
           default: "0.85,0.9,0.95"   # the gate levels to try; the out-of-fold scoreboard picks one
+        - name: flood_weight
+          default: "1"   # what a row a flash flood followed weighs in training (10 cost 12 points of events, 22 Oct)
+        - name: flood_value
+          default: "10"   # what a flood flagged before PUB counts in ranking the fits and choosing the Medium cut-off
+        - name: area_effect
+          default: "credibility"   # the area as a Bühlmann-Straub prior (credibility) or as a category input (category)
+        - name: variants
+          default: ""   # extra fits to compare at every gate recall, area_effect:flood_weight, e.g. "category:1"
+        - name: register
+          default: "true"   # "false" logs the chosen pair without registering it
         - name: score_test
           default: "false"
         - name: compare_without
@@ -41,6 +54,16 @@ resources:
               - ${resources.registered_models.floodsense.name}
               - --gate-recall
               - "{{job.parameters.gate_recalls}}"
+              - --flood-weight
+              - "{{job.parameters.flood_weight}}"
+              - --flood-value
+              - "{{job.parameters.flood_value}}"
+              - --area-effect
+              - "{{job.parameters.area_effect}}"
+              - --variants
+              - "{{job.parameters.variants}}"
+              - --register
+              - "{{job.parameters.register}}"
               - --score-test
               - "{{job.parameters.score_test}}"
               - --compare-without

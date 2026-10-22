@@ -63,6 +63,9 @@ TARGETS = {
     "flood_mean_warning_min": 30.0,  # average warning before a flash flood, up from PUB's 13.3 min
     "high_precision": 1 / 3,  # at least 1 in 3 High warnings followed by a real flood
 }
+# What a flash flood flagged before PUB is worth against any other PUB event flagged, when models and cut-offs are
+# compared (gated.weighted_flagged): the targets above are about floods, and they are one PUB event in twenty-five.
+FLOOD_EVENT_VALUE = 10.0
 
 
 def tick_labels(

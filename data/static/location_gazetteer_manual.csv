@@ -1,4 +1,36 @@
 # Alert locations placed by hand, for those in silver.alerts_unplaced, or to correct silver.location_gazetteer.
 # A row here wins over every other method (method 'manual'). location is PUB's text as written (silver matches it by
 # location_key, so spelling variants of the same place need only one row); lat/lon in WGS84 degrees.
+# 21 Oct 2026: the 29 locations of silver.alerts_unplaced (50 warnings; each blanked its hour's labels in every area)
+# and one correction, from the PUB sensor the alert names, OneMap, or the gazetteer's own placing of the same place.
 location,lat,lon,note
+14 Tractor Road,1.324953,103.707728,"OneMap: 14 Tractor Road, Singapore 627973"
+Aljunied Rd under PIE Flyover,1.32027,103.88196,PUB sensor CWS327 Aljunied Rd (Hong Leong NKF)
+Along PIE (Tuas) before Adam Rd Exit Lane 1,1.3291,103.81443,"the PIE's Adam Rd exit, as Adam Rd (towards Queensway) in the gazetteer"
+Bedok Rd / Bedok Garden,1.323003,103.953529,approximate: PUB sensor EWS089 Bedok Canal SD3 (Bedok Rd)
+Bt Timah Canal (Sime Darby Centre),1.33651,103.78316,as PUB sensor Mayfair (Sime Darby Centre)
+Dunearn Rd (Sime Darby Centre),1.33651,103.78316,"correction: OneMap had matched another stretch of Dunearn Rd, 2.8 km away in Novena; Sime Darby Centre is by the Mayfair sensor"
+East Coast Rd,1.30563,103.90632,PUB sensor CWS151 Tembeling Rd OD (East Coast Rd)
+Fort Rd / Katong Pk,1.29684,103.88512,PUB sensor CWS112 Fort Rd OD (Fort Rd / ECP)
+Happy Ave (Macpherson Linear Park,1.33379,103.88063,PUB sensor CWS020 Happy Ave OD (Jln Setia)
+Junction of Upp Changi Rd and Bedok Ave 4,1.33408,103.94899,PUB sensor EWS004 Sg Bedok (Upp Changi Rd)
+KJE (Slip Road to PIE),1.344,103.74,"approximate: the KJE/PIE interchange, on the Bukit Batok/Jurong East boundary"
+KPE (ECP) (Slip rd to Buangkok E Drive),1.37561,103.91015,PUB sensor EWS409 KPE/Buangkok East Dr
+Lor 2 Toa Payoh Blk 122,1.34051,103.84694,PUB sensor CWS433 Lor 2 Toa Payoh (Braddell MRT)
+Lor Buangkok (near Kampung Buangkok),1.38294,103.87709,PUB sensor EWS017 Sg Tongkang (Lor Buangkok)
+Mt Vernon Rd,1.3415,103.88113,PUB sensor CWS162 Mt Vernon Rd/Bartley Rd
+PIE (towards Changi Airport) after TPE,1.358,103.97,approximate: the PIE just east of its TPE interchange
+PIE(Tuas) towards KJE(BKE) Exit (Exit 35),1.344,103.74,"approximate: the PIE's KJE exit, as KJE (Slip Road to PIE)"
+Seletar Rd / Neram,1.3869,103.86724,PUB sensor EWS054 Neram Rd OD (Unit 18A)
+Sg Pandan Kechil (AYE),1.29794,103.783,PUB sensor WWS057 Sg Pandan Kechil (AYE 7.9km)
+Sg Pandan Kechil (NUS),1.29794,103.783,as Sg Pandan Kechil (AYE): PUB sensor WWS057
+Sg Tengah/Sg Tengah Agrotechnology Pk,1.38248,103.73115,PUB sensor WWS044 81 Sg Tengah Rd
+Sg Tongkang,1.38294,103.87709,"approximate: PUB sensor EWS017 Sg Tongkang (Lor Buangkok), the canal's only sensor"
+Sg Tongkang (AMK Ave 5),1.377311,103.860486,"approximate: OneMap Ang Mo Kio Ave 5 park connector, which follows the canal; on the Serangoon/Ang Mo Kio boundary"
+Tampines Road (Outside Paya Lebar Air Base),1.37,103.905,approximate: Tampines Rd along the air base's north side
+Telok Kurau,1.31187,103.91647,PUB sensor EWS155 Siglap Canal (Lor M Telok Kurau)
+Telok Kurau (Still Rd),1.309847,103.907761,"OneMap: Still Road, by Lorong Stangee"
+Ubi Ave 1,1.33111,103.90119,approximate: PUB sensor CWS082 Kaki Bukit OD No 1 (Ubi Ave 2)
+Upp Hokkien St,1.28532,103.84634,as Upp Hokkien St/South Bridge Rd (PUB sensor)
+Upp Thomson Rd (Opp Pierce Sec Sch),1.366659,103.830216,"OneMap: Peirce Secondary School, Sin Ming Walk"
+Woodlands Rd / KJE,1.38698,103.75686,PUB sensor WWS061 KJE/Woodlands Rd (Senja Gateway)

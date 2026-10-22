@@ -19,7 +19,7 @@ SGT midnight is the UTC one minus 8 hours, and the 5-minute tick grid is the sam
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
@@ -44,9 +44,32 @@ LIGHTNING_START_S = (C.LIGHTNING_START - date(1970, 1, 1)).days * 86400 - 8 * 36
 EXACT = "decimal(10,4)"  # weather means are of exact decimals, so they don't depend on how Spark splits the work
 
 
+def sgt_seconds(t: datetime) -> int:
+    """Epoch seconds of a naive SGT time."""
+    return int((t - datetime(1970, 1, 1)).total_seconds()) - 8 * 3600
+
+
+# NEA's bulk re-publication of 8 May 2025 (contract.FORECASTS_REPUBLISHED_SGT), [start, end) in epoch seconds
+REPUBLISHED_S = tuple(sgt_seconds(t) for t in C.FORECASTS_REPUBLISHED_SGT)
+REPUBLISHED_DELAY_S = C.REPUBLISHED_FORECAST_DELAY_MINUTES * 60
+
+
 def seconds(ts: str) -> Column:
     """Epoch seconds of a TIMESTAMP column."""
     return F.unix_timestamp(ts)
+
+
+def published_s() -> Column:
+    """When a live fetch could first have read a silver.forecasts_2h row, in epoch seconds: its updated_at, except for
+    the forecasts NEA re-published in bulk on 8 May 2025, which count from REPUBLISHED_DELAY after their issue
+    (contract.FORECASTS_REPUBLISHED_SGT says why)."""
+    updated, issued = seconds("updated_at"), seconds("issued_at")
+    rebuilt = (
+        (updated >= REPUBLISHED_S[0])
+        & (updated < REPUBLISHED_S[1])
+        & (updated - issued > FORECAST_REACH_S)
+    )
+    return F.when(rebuilt, issued + REPUBLISHED_DELAY_S).otherwise(updated)
 
 
 def tick_at_or_after(s: Column) -> Column:
@@ -97,14 +120,15 @@ def wind(u: str = "wind_u_kn", v: str = "wind_v_kn") -> tuple[Column, Column]:
 
 
 def forecast_ticks(forecasts: DataFrame) -> DataFrame:
-    """gold.area_forecasts from silver.forecasts_2h rows: each area's newest forecast published (updated_at) by each
-    tick, while its valid period lasts, with its rain class and age."""
+    """gold.area_forecasts from silver.forecasts_2h rows: each area's newest forecast published (updated_at, or its
+    issue for those NEA re-published in bulk: `published_s`) by each tick, while its valid period lasts, with its rain
+    class and age."""
     published = forecasts.where(
         "area IS NOT NULL AND updated_at IS NOT NULL AND valid_to IS NOT NULL AND rain_class IS NOT NULL"
     ).select(
         "area",
         "rain_class",
-        seconds("updated_at").alias("published_s"),
+        published_s().alias("published_s"),
         seconds("issued_at").alias("issued_s"),
         seconds("valid_to").alias("valid_to_s"),
     )
