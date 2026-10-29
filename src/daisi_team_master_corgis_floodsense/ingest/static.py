@@ -1,16 +1,23 @@
-"""Static context layers from data.gov.sg (land use, PUB water-level sensors, flood-prone area, SLA benchmarks).
-Each layer lands under `<name>/version=<lastUpdatedAt date>/`: the original file (kept for audit, ignored by Auto
-Loader) and a readable copy, one GeoJSON feature or spreadsheet row per JSONL line, written last. A layer whose
-readable copy exists for the current version is skipped, so re-runs only fetch layers that data.gov.sg updated.
+"""Static context layers from data.gov.sg (land use, PUB water-level sensors, flood-prone area, SLA benchmarks, the
+national map's polygons and lines). Each layer lands under `<name>/version=<lastUpdatedAt date>/`: the original file
+(kept for audit, ignored by Auto Loader) and a readable copy, one GeoJSON feature or spreadsheet row per JSONL line,
+written last. A layer whose readable copy exists for the current version is skipped, so re-runs only fetch layers that
+data.gov.sg updated.
 
 For each layer, `fetch_static` asks data.gov.sg for the dataset's metadata and takes its `lastUpdatedAt` date as the
 version. If the readable copy of that version is already there, it moves on. Otherwise it downloads the file (the
 presigned-URL handshake in client.py) and lands it twice. The original bytes are kept for audit under a name Auto
 Loader doesn't read (.geojson.gz, .xlsx). The readable copy is what bronze streams: for GeoJSON, one JSONL line per
-feature (`feature_index`, `feature`); for a spreadsheet, one line per row (`sheet`, `row_index`, `row`, built by
-`xlsx_rows` from the first non-empty row of each sheet as the header, every value as text); for CSV, the file itself.
-Each line also carries the dataset id, name and version. The readable copy is written last, so its presence is what
-marks a version done. A newer version lands beside the old ones, and silver reads the newest.
+feature (`feature_index`, `part`, `parts`, `feature`); for a spreadsheet, one line per row (`sheet`, `row_index`,
+`row`, built by `xlsx_rows` from the first non-empty row of each sheet as the header, every value as text); for CSV,
+the file itself. Each line also carries the dataset id, name and version. The readable copy is written last, so its
+presence is what marks a version done. A newer version lands beside the old ones, and silver reads the newest.
+
+Bronze holds each line as one VARIANT, of at most 16 MiB. The national map's contours have a vertex every 30 cm or so,
+which puts up to about 900,000 vertices in one line (40 MB of JSON). So a line feature of more than MAX_PART_VERTICES
+vertices lands as several lines, its consecutive parts (`feature_parts`): each a LineString of the same properties that
+starts at the vertex the part before it ends at, so no vertex or segment is lost. Every other feature lands whole, as
+part 0 of 1.
 """
 
 from __future__ import annotations
@@ -29,9 +36,35 @@ from .sinks import Sink
 
 log = logging.getLogger(__name__)
 
+# Vertices a landed line may hold: about 2 MB of JSON, well inside bronze's 16 MiB VARIANT.
+MAX_PART_VERTICES = 50_000
+
 
 def readable_ext(kind: str) -> str:
     return {"geojson": "jsonl.gz", "xlsx": "jsonl", "csv": "csv"}[kind]
+
+
+def feature_parts(feature: dict, max_vertices: int = MAX_PART_VERTICES) -> list[dict]:
+    """The feature as it lands: whole, or, for a LineString or MultiLineString of more than `max_vertices` vertices,
+    its consecutive parts as LineStrings (each member line in turn, cut every `max_vertices - 1` segments), which keep
+    the feature's properties. A part starts at the vertex the part before it ends at, so every segment is in exactly
+    one part. Polygons and points always land whole."""
+    geometry = feature.get("geometry") or {}
+    kind = geometry.get("type")
+    if kind == "LineString":
+        lines = [geometry.get("coordinates") or []]
+    elif kind == "MultiLineString":
+        lines = geometry.get("coordinates") or []
+    else:
+        return [feature]
+    if sum(len(line) for line in lines) <= max_vertices:
+        return [feature]
+    step = max_vertices - 1
+    return [
+        {**feature, "geometry": {"type": "LineString", "coordinates": line[i : i + max_vertices]}}
+        for line in lines
+        for i in range(0, max(len(line) - 1, 1), step)
+    ]
 
 
 def fetch_static(
@@ -72,10 +105,14 @@ def fetch_static(
                     fetched_at=fetched,
                     runner=runner,
                     feature_index=i,
-                    feature=f,
+                    part=k,
+                    parts=len(parts),
+                    feature=part,
                     **common,
                 )
                 for i, f in enumerate(features)
+                for parts in (feature_parts(f, MAX_PART_VERTICES),)
+                for k, part in enumerate(parts)
             )
             sink.write_bytes(readable, S.gzipped(S.jsonl(lines)))
             count = len(features)

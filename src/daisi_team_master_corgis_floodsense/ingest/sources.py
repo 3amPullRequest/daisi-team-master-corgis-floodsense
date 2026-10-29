@@ -11,7 +11,8 @@ lands, and what a landed line looks like:
   priority: the labels and rainfall first, the slow 1-minute sensors last. Six of them also have a yearly "Historical
   ..." CSV collection (`csv_collection`), landed as `<name>_hist`; the API then only has to cover the years after the
   last published CSV. The rest start where the API does (`api_start`). STATIC_LAYERS are one-off datasets, and the
-  TELEGRAM, TIDES, UHSLC, ONEMAP and HEARTBEAT names are the folders that don't come from the real-time API.
+  TELEGRAM, TELEGRAM_JEV, TIDES, UHSLC, ONEMAP and HEARTBEAT names are the folders that don't come from the real-time
+  API.
 - The channel's history. PUB renamed its Telegram channel but kept the post ids, so TELEGRAM_ALIASES says which
   username to ask the web archive for on which days, and WAYBACK_UNTIL where captures stop adding posts the channel
   doesn't still show.
@@ -114,6 +115,13 @@ STATIC_LAYERS: tuple[StaticLayer, ...] = (
     StaticLayer(
         "static_sla_vertical_control", "d_c1f2b991f3932fb69b48edcceef54d13", "geojson"
     ),
+    # the national map (25 Oct): coastal outlines, waterways and parks; contours (20 m apart) and major roads
+    StaticLayer(
+        "static_national_map_polygon", "d_29f066d67df3eae91df8a42f443863c8", "geojson"
+    ),
+    StaticLayer(
+        "static_national_map_line", "d_10480c0b59e65663dfae1028ff4aa8bb", "geojson"
+    ),
 )
 
 TELEGRAM = "pub_telegram_posts"
@@ -141,6 +149,10 @@ TELEGRAM_ALIASES = (
 # up) are still on the channel, so later captures only repeat what `backfill.py telegram` lands.
 WAYBACK_UNTIL = date(2025, 3, 31)
 
+# Every call to Jev, the fallback reader for posts no pattern reads (labels/jev.py, ingest/fallback.py): what it was
+# asked and what it answered, one line per call. The record of when Jev was used, and what silver reads its answers from.
+TELEGRAM_JEV = "telegram_jev_parses"
+
 TIDES = "nea_tide_timings"
 NEA_TIDES_URL = "https://www.nea.gov.sg/corporate-functions/weather/tide-timings"
 
@@ -162,7 +174,7 @@ def bronze_landing_names() -> set[str]:
     names = {s.name for s in API_SOURCES}
     names |= {s.hist_name for s in API_SOURCES if s.csv_collection}
     names |= {layer.name for layer in STATIC_LAYERS}
-    return names | {TELEGRAM, TIDES, UHSLC, ONEMAP, HEARTBEAT}
+    return names | {TELEGRAM, TELEGRAM_JEV, TIDES, UHSLC, ONEMAP, HEARTBEAT}
 
 
 # --- time and paths ------------------------------------------------------------------------------------------------

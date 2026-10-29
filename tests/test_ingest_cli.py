@@ -94,3 +94,23 @@ def test_the_default_scope_is_the_bundle_variable(monkeypatch):
     bundle = (Path(__file__).resolve().parents[1] / "databricks.yml").read_text()
     default = re.search(r"secret_scope:\n(?:\s+.*\n)*?\s+default: (\S+)", bundle)
     assert args.secret_scope == default.group(1) == cli.SECRET_SCOPE
+
+
+def test_read_secret_reads_the_scope_as_the_profile_and_strips_it(monkeypatch):
+    secrets, profiles = fake_workspace(monkeypatch, "sender@example.com\n")
+    assert (
+        cli.read_secret("floodsense", "parser-alert-smtp-user", "flood_dev")
+        == "sender@example.com"
+    )
+    assert profiles == ["flood_dev"] and secrets.asked == [
+        ("floodsense", "parser-alert-smtp-user")
+    ]
+
+
+def test_read_secret_is_none_without_a_secret_or_a_way_to_ask(monkeypatch):
+    fake_workspace(monkeypatch, RuntimeError("RESOURCE_DOES_NOT_EXIST"))
+    assert cli.read_secret("floodsense", "parser-alert-smtp-user", "flood_dev") is None
+    assert (
+        cli.read_secret("floodsense", "parser-alert-smtp-user", None) is None
+    )  # a laptop run without --profile
+    assert cli.read_secret("", "parser-alert-smtp-user", "flood_dev") is None

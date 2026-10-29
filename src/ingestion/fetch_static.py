@@ -1,4 +1,5 @@
-"""Static context layers (URA land use 2019/2025, PUB water-level sensors, flood-prone area, SLA benchmarks).
+"""Static context layers (URA land use 2019/2025, PUB water-level sensors, flood-prone area, SLA benchmarks, the
+national map's polygons and lines).
 
 uv run python src/ingestion/fetch_static.py --landing /Volumes/flood_dev/dev_<you>_bronze/landing --profile flood_dev
 

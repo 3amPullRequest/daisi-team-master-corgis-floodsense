@@ -34,7 +34,9 @@ Fitting, on the development period of split.make_split (blocked day-folds, an em
 4. Cut-offs, on the pooled out-of-fold probabilities, judged by scoreboard.score over the development period as
    baseline.fit judges the rule: Medium flags the most PUB events before PUB within the false-alarm budget, a flood
    event counting `flood_value` times (`weighted_flagged`); High is the lowest higher cut-off whose High warnings are
-   followed by a flash flood often enough.
+   followed by a flash flood often enough. Or both are fixed chances (`medium_chance`, `high_chance`): v11 (24 Oct)
+   and final_1 (25 Oct, v12's design) have Medium from 1% and High from 5%, and final_2 Medium from 3%, as no cut-off
+   on p_alert brings 1 in 3 High warnings a flood.
 5. Both models are refitted on the whole development period, with the rounds the folds chose. Every out-of-fold score
    comes from a prior computed without its own block, so no score reads its own block's alerts through the prior.
 
@@ -91,8 +93,11 @@ RAIN = tuple(C.rain_column(w) for w in C.RAIN_WINDOWS_MINUTES)
 NEARBY_RAIN = ("rain_nearby_30min_mm", "rain_upwind_30min_mm")
 TIDE = ("tide_height_m", "minutes_to_high_tide")
 HIGH_TIDE_M = 2.5  # above Chart Datum; Tanjong Pagar's high waters run about 2.2-3.2 m (NEA, Oct-Nov 2026)
-# the alert chance may only rise with these
-RISING = {*RAIN, "forecast_rain_class", *NEARBY_RAIN, "tide_height_m"}
+# the alert chance may only rise with these, the drains' response among them (more water in the drains, or a new high
+# in the storm, never lowers it); the storm so far (contract.STORM_HISTORY) may move it either way, as the prior rain may
+RISING = {
+    *RAIN, "forecast_rain_class", *C.FORECAST_GROUPED, *NEARBY_RAIN, *C.PUB_ALERTS, "tide_height_m", *C.DRAIN_RESPONSE
+}
 
 # Few events (about 160 alert days in training), so both models are small and heavily regularised.
 GATE_PARAMS = {
@@ -131,7 +136,9 @@ class Settings:
     one only a warning followed, in training, in the gate's recall and in the area prior's claims. flood_value: what a
     flood event flagged before PUB counts when the Medium cut-off is chosen. area_effect: CREDIBILITY (the area prior as
     both models' offset) or CATEGORY (the area as an input, as before 21 Oct). patience: rounds without a better mean
-    out-of-fold loss before the folds stop. max_false_alarms is per area-month, as in baseline.fit."""
+    out-of-fold loss before the folds stop. max_false_alarms is per area-month, as in baseline.fit. medium_chance and
+    high_chance fix the tiers' cut-offs on p_alert (the tiers by chance, 24 Oct: Medium from 1%, High from 5%) instead
+    of choosing Medium within the false-alarm budget and High by its flood precision; None chooses them so."""
 
     gate_recall: float = 0.9
     gate_quiet_share: float = 0.05
@@ -139,15 +146,20 @@ class Settings:
     flood_weight: float = 1.0
     flood_value: float = FLOOD_EVENT_VALUE
     area_effect: str = CREDIBILITY
+    # the credibility prior's recency half-life in days (credibility.recency); None weighs every day alike, as v5
+    prior_half_life_days: float | None = None
     max_rounds: int = 2000
     patience: int = 100
     max_false_alarms: float = 1.0
     min_high_precision: float = TARGETS["high_precision"]
     cut_off_candidates: int = 60
+    medium_chance: float | None = None
+    high_chance: float | None = None
     seed: int = 0
-    # model features left out, to measure what a group adds (train.py fits the pair with and without each group in
-    # contract.FEATURE_GROUPS that --compare-without names)
-    drop: tuple[str, ...] = ()
+    # model features left out: those outside the feature set (contract.BASE_FEATURES by default: v5's), and to measure
+    # what a group adds (train.py fits the pair with and without each group in contract.FEATURE_GROUPS that
+    # --compare-without names)
+    drop: tuple[str, ...] = tuple(c for c in C.MODEL_FEATURES if c not in C.BASE_FEATURES)
 
     def __post_init__(self):
         if self.area_effect not in AREA_EFFECTS:
@@ -157,6 +169,16 @@ class Settings:
         if self.flood_weight < 1 or self.flood_value < 1:
             raise ValueError(
                 "flood_weight and flood_value are at least 1: a flood weighs no less than a warning"
+            )
+        if self.prior_half_life_days is not None and not self.prior_half_life_days > 0:
+            raise ValueError(f"prior_half_life_days is positive, not {self.prior_half_life_days!r}")
+        for name in ("medium_chance", "high_chance"):
+            chance = getattr(self, name)
+            if chance is not None and not 0 < chance < 1:
+                raise ValueError(f"{name} is a chance between 0 and 1, not {chance!r}")
+        if None not in (self.medium_chance, self.high_chance) and not self.medium_chance < self.high_chance:
+            raise ValueError(
+                f"high_chance ({self.high_chance}) must be above medium_chance ({self.medium_chance})"
             )
 
     @property
@@ -216,6 +238,8 @@ class GatedPair:
     gate_base: float = 0.0
     rater_base: float = 0.0
     flood_weight: float = 1.0
+    # the rainfall rule as a safety override (ordinal.add_override, 23 Oct): (window in minutes, mm), or none
+    override: tuple[int, float] | None = None
 
     @property
     def features(self) -> list[str]:
@@ -223,7 +247,8 @@ class GatedPair:
 
     @property
     def name(self) -> str:
-        return f"gated_lightgbm M>={self.medium_p:.3g} H>={self.high_p:.3g}"
+        over = f" R>={self.override[1]:g}mm/{self.override[0]}min" if self.override else ""
+        return f"gated_lightgbm M>={self.medium_p:.3g} H>={self.high_p:.3g}{over}"
 
     def offsets(self, frame: pd.DataFrame) -> np.ndarray:
         """Each row's area offset (0 everywhere for a pair without a prior)."""
@@ -259,9 +284,16 @@ class GatedPair:
         return _tiers(p, self.medium_p, self.high_p)
 
     def predict(self, frame: pd.DataFrame) -> pd.DataFrame:
-        """Rows for ml.predictions, with the reason the app shows for every warning."""
+        """Rows for ml.predictions, with the reason the app shows for every warning. Where the override is set, a rated
+        row whose rain passes it is at least Medium."""
         _, p = self.p_alert(frame)
         tier = self.tiers(p)
+        forced = override_mask(frame, self.override) & np.isfinite(p)
+        tier = np.where(forced & (tier == "Low"), "Medium", tier)
+        reason = self.reasons(frame, tier)
+        only_rule = forced & (p < self.medium_p)
+        if only_rule.any():
+            reason[only_rule] = [override_reason(r, self.override) for r in frame[only_rule].to_dict("records")]
         return pd.DataFrame(
             {
                 "model": self.name,
@@ -269,7 +301,7 @@ class GatedPair:
                 "ts": frame["ts"],
                 "tier": tier,
                 "p_alert": p,
-                "reason": self.reasons(frame, tier),
+                "reason": reason,
             }
         )
 
@@ -294,29 +326,32 @@ class GatedPair:
         texts = []
         for row, contribution in zip(rows.to_dict("records"), contributions):
             ranked = np.argsort(-contribution[:-1])  # the last column is the bias
-            raised = [names[i] for i in ranked if contribution[i] > 0]
-            phrases = [p for p in (_phrase(c, row) for c in raised) if p][:2]
-            # nothing raised the score on its own (inputs only act together): name the weather anyway. The tide only
-            # adds to a reason: a high tide alone never floods a drain.
-            weather = next(
-                (
-                    w
-                    for w in (
-                        _phrase(c, row)
-                        for c in (*RAIN, *NEARBY_RAIN, "forecast_rain_class")
-                    )
-                    if w
-                ),
-                "conditions like those before past PUB alerts",
-            )
-            tide_only = all(c in TIDE for c in raised if _phrase(c, row))
-            if not phrases:
-                phrases = [weather]
-            elif tide_only:
-                phrases = [weather, phrases[0]]
-            texts.append("; ".join(phrases))
+            texts.append(reason_text([names[i] for i in ranked if contribution[i] > 0], row))
         reason[warned] = texts
         return reason
+
+    def chances(self, frame: pd.DataFrame) -> dict[str, np.ndarray]:
+        """p_alert per row (NaN where unrated), as verify.py compares models' chances."""
+        _, p = self.p_alert(frame)
+        return {"p_alert": p}
+
+    @property
+    def area_priors(self) -> dict[str, dict[str, float]]:
+        return {} if self.area_offsets is None else {"alert": self.area_offsets}
+
+    def logged_cut_offs(self) -> dict[str, float]:
+        """The cut-offs and gate threshold as train.py logs them (pair_*), which verify.py checks the registered pair
+        against."""
+        out = {
+            "pair_medium_p": self.medium_p,
+            "pair_quiet_p": self.quiet_p,
+            "pair_gate_threshold": self.gate_threshold,
+        }
+        if math.isfinite(self.high_p):
+            out["pair_high_p"] = self.high_p
+        if self.override is not None:
+            out["pair_override_mm"] = self.override[1]
+        return out
 
     def save(self, directory) -> None:
         """Two LightGBM model files and the rest as JSON, so loading needs only lightgbm and numpy."""
@@ -339,6 +374,9 @@ class GatedPair:
             "gate_base": self.gate_base,
             "rater_base": self.rater_base,
             "flood_weight": self.flood_weight,
+            "override": None
+            if self.override is None
+            else {"window_min": self.override[0], "mm": self.override[1]},
         }
         (out / "pair.json").write_text(json.dumps(settings, indent=1))
 
@@ -368,6 +406,10 @@ class GatedPair:
             gate_base=s.get("gate_base", 0.0),
             rater_base=s.get("rater_base", 0.0),
             flood_weight=s.get("flood_weight", 1.0),
+            # pairs saved before 23 Oct have no override
+            override=None
+            if s.get("override") is None
+            else (int(s["override"]["window_min"]), float(s["override"]["mm"])),
         )
 
 
@@ -428,6 +470,7 @@ def fit(
     """
     # only fitting needs scikit-learn: loading a saved pair (serving.py) must need no more than train.log_model pins
     from sklearn.isotonic import IsotonicRegression
+    from sklearn.metrics import average_precision_score
 
     rows = development_rows(rows, split)
     areas = tuple(sorted(rows[AREA].unique()))
@@ -544,6 +587,15 @@ def fit(
         "high_p": high_p,
         "brier": float(np.mean((p - y) ** 2)),
         "brier_base_rate": float(np.mean((y.mean() - y) ** 2)),
+        # as the ordinal model reports them: the rows warned, and average precision against each label's base rate
+        # (the pair's one chance stands for the flood chance too)
+        "warned_row_share": float((tier != "Low").mean()),
+        "alert_row_recall": float((tier != "Low")[y == 1].mean()),
+        "flood_row_recall": float((tier != "Low")[flood == 1].mean()) if flood.any() else math.nan,
+        "alert_pr_auc": float(average_precision_score(y, p)),
+        "flood_pr_auc": float(average_precision_score(flood, p)) if flood.any() else math.nan,
+        "alert_base_rate": float(y.mean()),
+        "flood_base_rate": float(flood.mean()),
     }
     if prior is not None:
         stats |= {
@@ -576,10 +628,31 @@ def fit(
 
 def development_rows(rows: pd.DataFrame, split: Split) -> pd.DataFrame:
     """The rows inside the development period, in a fixed order (so subsamples repeat). Refuses a row whose label or
-    features aren't known: gold.model_rows holds none, and a model must never learn from one."""
+    features aren't known: gold.model_rows holds none, and a model must never learn from one. Rows that already are
+    that (this function's own output) come back as they are, not copied: ten million rows are 1.4 GB, and a sweep's
+    serverless driver ran out of memory on 23 Oct copying them for every fit."""
     check_recorded(rows)
-    inside = rows[split.dev(rows["ts"])]
-    return inside.sort_values(["ts", AREA], kind="stable").reset_index(drop=True)
+    inside = split.dev(rows["ts"])
+    if inside.all() and _in_order(rows):
+        return rows
+    return rows[inside].sort_values(["ts", AREA], kind="stable").reset_index(drop=True)
+
+
+def _in_order(rows: pd.DataFrame) -> bool:
+    """Whether rows are sorted by (ts, area) on a fresh RangeIndex, as development_rows leaves them."""
+    index = rows.index
+    if not (isinstance(index, pd.RangeIndex) and index.start == 0 and index.step == 1):
+        return False
+    step = np.diff(_sgt(rows["ts"]).to_numpy())
+    if (step < np.timedelta64(0)).any():
+        return False
+    area = rows[AREA]
+    codes = (
+        area.cat.codes.to_numpy()
+        if isinstance(area.dtype, pd.CategoricalDtype) and area.cat.categories.is_monotonic_increasing
+        else pd.factorize(area.astype(object), sort=True)[0]
+    )
+    return not (np.diff(codes)[step == np.timedelta64(0)] < 0).any()
 
 
 def check_recorded(rows: pd.DataFrame) -> None:
@@ -650,7 +723,8 @@ def cut_offs(
     Medium: the cut-off that flags the most PUB alert events before PUB within `max_false_alarms` per area-month, a
     flood event counting `flood_value` times (`weighted_flagged`); ties go to the longer mean lead, then to fewer
     warned hours. High: the lowest higher cut-off whose High warnings are followed by a flash flood at least
-    `min_high_precision` of the time, else never. Returns both and the Medium curve.
+    `min_high_precision` of the time, else never. `settings.medium_chance` or `high_chance` fixes that cut-off instead
+    (the tiers by chance); the curve is computed either way. Returns both and the Medium curve.
 
     Every cut-off is above the probability of the rows the gate screens out: calibration floors the passed rows at it,
     and a cut-off there would warn every row, which the scoreboard can't fault (one endless warning per area holds
@@ -693,15 +767,26 @@ def cut_offs(
             }
         )
     curve = pd.DataFrame(curve)
-    within = curve[curve["false_alarms"] <= settings.max_false_alarms]
-    if within.empty:
-        raise ValueError(
-            f"every cut-off raises more than {settings.max_false_alarms} false alarms per area-month"
-        )
-    best = within.sort_values(
-        ["weighted_flagged", "lead_min", "warned_hours"], ascending=[False, False, True]
-    ).iloc[0]
-    medium = float(best["medium_p"])
+    if settings.medium_chance is not None:
+        medium = settings.medium_chance
+        if medium <= screened_out:
+            raise ValueError(
+                f"a Medium cut-off of {medium:g} would warn the rows the gate screens out (their chance {screened_out:.3g})"
+            )
+    else:
+        within = curve[curve["false_alarms"] <= settings.max_false_alarms]
+        if within.empty:
+            raise ValueError(
+                f"every cut-off raises more than {settings.max_false_alarms} false alarms per area-month"
+            )
+        best = within.sort_values(
+            ["weighted_flagged", "lead_min", "warned_hours"], ascending=[False, False, True]
+        ).iloc[0]
+        medium = float(best["medium_p"])
+    if settings.high_chance is not None:
+        if settings.high_chance <= medium:
+            raise ValueError(f"High from {settings.high_chance:g} would sit at or below Medium ({medium:.3g})")
+        return medium, settings.high_chance, curve
 
     high = math.inf
     for c in (c for c in candidates if c > medium):
@@ -772,17 +857,25 @@ def _priors(
     rows: pd.DataFrame, split: Split, settings: Settings
 ) -> tuple[list[dict[str, float] | None], object | None]:
     """The area offsets of each fold's models, from that fold's training days only, and the prior of the final models,
-    from the whole development period (credibility.area_prior); Nones when the pair reads the area as a category."""
+    from the whole development period (credibility.area_prior); Nones when the pair reads the area as a category. With
+    a recency half-life, a fold's prior weighs both ways from the middle of its block, the final one back from its last
+    day (credibility.py)."""
     if settings.area_effect != CREDIBILITY:
         return [None] * len(split.folds), None
     days = area_days(rows)
     day = pd.Series(days["day"])
-    weight = settings.flood_weight
+    weight, half_life = settings.flood_weight, settings.prior_half_life_days
     folds = [
-        area_prior(days[fold.train(day)], flood_weight=weight).offsets
+        area_prior(
+            days[fold.train(day)],
+            flood_weight=weight,
+            half_life_days=half_life,
+            reference=fold.valid_start + (fold.valid_end - fold.valid_start) / 2,
+            two_sided=True,
+        ).offsets
         for fold in split.folds
     ]
-    return folds, area_prior(days, flood_weight=weight)
+    return folds, area_prior(days, flood_weight=weight, half_life_days=half_life)
 
 
 def _offsets(area: pd.Series, offsets: dict[str, float] | None) -> np.ndarray:
@@ -903,13 +996,53 @@ def _train(
     return lgb.train(p, data, num_boost_round=rounds), base
 
 
+def override_mask(frame: pd.DataFrame, override: tuple[int, float] | None) -> np.ndarray:
+    """Where the rainfall rule's override (window in minutes, mm) warns: that window's rain at or above its
+    threshold. None warns nowhere."""
+    if override is None:
+        return np.zeros(len(frame), dtype=bool)
+    window, mm = override
+    return (pd.to_numeric(frame[C.rain_column(window)]) >= mm).fillna(False).to_numpy(dtype=bool)
+
+
+def override_reason(row: dict, override: tuple[int, float]) -> str:
+    """The rule's words, for a warning only the override raised."""
+    window, _ = override
+    return f"{row[C.rain_column(window)]:.0f} mm of rain within {C.GAUGE_RADIUS_KM:g} km in the last {window} min"
+
+
+def reason_text(raised: list[str], row: dict) -> str:
+    """A warned row's reason from the inputs that raised its score, most first: the first two that make words, or the
+    weather at hand when none does (inputs can act only together). The tide only adds to a reason: a high tide alone
+    never floods a drain."""
+    # the drains' two rises say the same in words, so a phrase counts once
+    phrases = list(dict.fromkeys(p for p in (_phrase(c, row) for c in raised) if p))[:2]
+    weather = next(
+        (
+            w
+            for w in (_phrase(c, row) for c in (*RAIN, *NEARBY_RAIN, "forecast_rain_class"))
+            if w
+        ),
+        "conditions like those before past PUB alerts",
+    )
+    tide_only = all(c in TIDE for c in raised if _phrase(c, row))
+    if not phrases:
+        phrases = [weather]
+    elif tide_only:
+        phrases = [weather, phrases[0]]
+    return "; ".join(phrases)
+
+
 def _phrase(name: str, row: dict) -> str | None:
     """The app's words for one input of a warned row, or None for inputs that don't make a reason a resident can act
-    on (the hour, gauge counts, forecast age), or that didn't add to the risk here (a low tide)."""
+    on (the hour, gauge counts, forecast age, the dew point), or that didn't add to the risk here (a low tide)."""
     value = row.get(name)
     if name in RAIN and value is not None and value >= 1:
         minutes = name.removeprefix("rain_").removesuffix("min_mm")
         return f"{value:.0f} mm of rain within {C.GAUGE_RADIUS_KM:g} km in the last {minutes} min"
+    if name in C.PRIOR_RAIN and _known(value) and value >= 1:
+        hours = int(name.removeprefix("rain_prior_").removesuffix("h_mm"))
+        return f"{value:.0f} mm of rain already in the {hours - 1} hours before the last one"
     if name in NEARBY_RAIN and _known(value) and value >= 1:
         near, far = C.NEARBY_RAIN_KM
         where = "upwind, " if name == "rain_upwind_30min_mm" else ""
@@ -917,6 +1050,13 @@ def _phrase(name: str, row: dict) -> str | None:
             f"{value:.0f} mm of rain {where}{near:g}-{far:g} km away in the last "
             f"{C.NEARBY_RAIN_MINUTES} min"
         )
+    if name in C.DRAIN_RISE and _known(value) and value >= 1:
+        # the drains' flow above its highest earlier in the storm: the last 10-30 minutes' rain is the storm's heaviest
+        return "rain here is the heaviest it has been in this storm"
+    if name in C.PUB_ALERTS and _known(value) and value >= 1:
+        km, minutes = C.NEARBY_ALERT_WINDOWS[C.PUB_ALERTS.index(name)]
+        alerts = "a PUB alert" if value < 2 else f"{value:.0f} PUB alerts"
+        return f"{alerts} within {km} km in the last {minutes} min"
     if name == "forecast_rain_class" and value:
         return f"NEA forecasts {C.RAIN_CLASSES[int(value)]} here"
     if name == "tide_height_m" and value is not None and value >= HIGH_TIDE_M:

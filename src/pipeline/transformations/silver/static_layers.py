@@ -1,12 +1,18 @@
-"""Silver static layers from data.gov.sg: URA's Master Plan land use and PUB's flood-prone area.
+"""Silver static layers from data.gov.sg: URA's Master Plan land use, PUB's flood-prone area and the national map.
 
 - silver.land_use: every land-use polygon of the 2019 and 2025 Master Plans, each with the days its plan is in force,
   so a tick reads the plan of its day.
 - silver.flood_prone_area: PUB's total flood-prone area per year.
+- silver.map_polygons (25 Oct): the national map's polygons: the coastal outlines (Singapore's main island, its islands,
+  and the Johor coast across the strait), the hydrographic features (canals, rivers, reservoirs, ponds, marshes), the
+  parks and nature reserves, the runways and the CBD.
+- silver.map_lines (25 Oct): the national map's lines: the contours (Contour_250K, every 20 m from -40 to 160 m, with
+  the height in height_m), the expressways and their slip roads, the major roads, and the international boundary.
 
 Each comes from the newest version data.gov.sg published (PUB's water-level sensors are in reference.py). Two layers
-stop at bronze: SLA's vertical control points carry no heights (only each point's number, status and update time), so
-elevation needs a DEM; and the radar frames are only archived for now.
+stop at bronze: SLA's vertical control points carry no heights (only each point's number, status and update time, and
+every z is 0; checked again 25 Oct), so the heights come from the national map's contours; and the radar frames are
+only archived for now.
 
 A layer lands in bronze once per version, and silver keeps only the newest version (`_newest`), so a layer is a
 snapshot, not a history. For land use, each Master Plan's table is read from its GeoJSON features: the properties
@@ -15,6 +21,14 @@ plans are stacked, each stamped with the days it is in force (MASTER_PLANS in ut
 consumer picks the plan of a day by comparing it with valid_from and valid_to. The flood-prone area is a short yearly
 table of hectares from the newest version of the CSV. Rows that don't parse, or lack a polygon or a positive area,
 are dropped.
+
+The national map's two tables read their features the same way: the layer (SLA's FOLDERPATH without its "Layers/"),
+the name, the length or area SLA measured, and the geometry as a GeoJSON string (WGS84, each vertex with a z of 0). A
+line that landed in parts (ingest/static.py feature_parts: a contour can hold 900,000 vertices) keeps a row per part,
+each a LineString that starts where the part before it ends, numbered by `part` of `parts`; its length_m is the whole
+line's. The map's inset of Pedra Branca, a frame and its labels, is map furniture, not ground, so it is left out (the
+rock itself, at its true place 50 km east, stays among the coastal outlines). Features without a geometry (two
+hydrographic ones) are dropped.
 """
 
 from functools import reduce
@@ -109,3 +123,95 @@ if landed(spark, "static_flood_prone_area_ha"):
             F.expr("try_cast(Hectares AS DOUBLE)").alias("hectares"),
         )
         return _newest(rows).select("year", "hectares", "version")
+
+
+# The national map's inset of Pedra Branca: its frame and labels, drawn beside the rock, which are no part of the ground
+MAP_FURNITURE = ("PB_draw_frame", "SMap_PedraBranca_Inset_Anno")
+
+
+def _map_features(table: str) -> DataFrame:
+    """The national map features of the newest version of a bronze table: layer, name, ids and the geometry."""
+    rows = spark.read.table(table).select(
+        get("version", "string").alias("version"),
+        get("feature_index", "int").alias("feature_index"),
+        # lines landed before parts existed are whole: part 0 of 1
+        F.coalesce(get("part", "int"), F.lit(0)).alias("part"),
+        F.coalesce(get("parts", "int"), F.lit(1)).alias("parts"),
+        _property("OBJECTID", "bigint").alias("object_id"),
+        F.regexp_replace(_property("FOLDERPATH", "string"), "^Layers/", "").alias(
+            "layer"
+        ),
+        # SLA ends some names with a line break
+        F.nullif(F.trim(_property("NAME", "string")), F.lit("")).alias("name"),
+        _property("SHAPE.LEN", "double").alias("length_m"),
+        _property("SHAPE.AREA", "double").alias("area_m2"),
+        get("feature.geometry.type", "string").alias("geometry_type"),
+        F.to_json(get("feature.geometry", "variant")).alias("geometry"),
+    )
+    # a row without a layer stays, for the layer_known expectation to count and drop
+    return _newest(rows).where(
+        F.coalesce(~F.col("layer").isin(*MAP_FURNITURE), F.lit(True))
+    )
+
+
+if landed(spark, "static_national_map_polygon"):
+
+    @dp.materialized_view(
+        name=f"{SILVER}.map_polygons",
+        comment="The national map's polygons, one row per feature of the newest version: layer (Coastal_Outlines: "
+        "Singapore's main island, its islands and the Johor coast; Hydrographic: canals, rivers, reservoirs, ponds "
+        "and marshes; Parks_NaturalReserve; Airport_Runway; Central_Business_District), SLA's name and measured area "
+        "(area_m2, in SVY21), and the polygon as GeoJSON (WGS84). The Pedra Branca inset's frame and labels are left "
+        "out.",
+    )
+    @dp.expect_all_or_drop(
+        {
+            "layer_known": "layer IS NOT NULL",
+            "polygon": "geometry_type IN ('Polygon', 'MultiPolygon') AND geometry IS NOT NULL",
+        }
+    )
+    def map_polygons():
+        return _map_features("static_national_map_polygon").select(
+            "layer",
+            "object_id",
+            "name",
+            "area_m2",
+            "geometry_type",
+            "geometry",
+            "version",
+        )
+
+
+if landed(spark, "static_national_map_line"):
+
+    @dp.materialized_view(
+        name=f"{SILVER}.map_lines",
+        comment="The national map's lines, one row per feature of the newest version, or per part of one that landed "
+        "in parts (part of parts, consecutive LineStrings each starting where the one before ends): layer "
+        "(Contour_250K: contours every 20 m, height_m their height, below 0 at sea; Expressway; Expressway_Sliproad; "
+        "Major_Road; International_bdy), SLA's name and the whole line's measured length (length_m, in SVY21), and the "
+        "line as GeoJSON (WGS84).",
+    )
+    @dp.expect_all_or_drop(
+        {
+            "layer_known": "layer IS NOT NULL",
+            "line": "geometry_type IN ('LineString', 'MultiLineString') AND geometry IS NOT NULL",
+        }
+    )
+    @dp.expect("contour_height_known", "layer <> 'Contour_250K' OR height_m IS NOT NULL")
+    def map_lines():
+        lines = _map_features("static_national_map_line")
+        return lines.select(
+            "layer",
+            "object_id",
+            "name",
+            F.when(
+                F.col("layer") == "Contour_250K", F.expr("try_cast(name AS INT)")
+            ).alias("height_m"),
+            "part",
+            "parts",
+            "length_m",
+            "geometry_type",
+            "geometry",
+            "version",
+        )

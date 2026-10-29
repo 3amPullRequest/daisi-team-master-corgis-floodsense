@@ -98,14 +98,8 @@ def resolve_api_key(secret_scope: str | None, profile: str | None = None) -> str
         )
         return None
     try:
-        if on_databricks:
-            from databricks.sdk.runtime import dbutils
-        else:
-            from databricks.sdk import WorkspaceClient
-
-            dbutils = WorkspaceClient(profile=profile).dbutils
         # a value piped into `databricks secrets put-secret` can end in a newline, which no HTTP header takes
-        key = dbutils.secrets.get(secret_scope, API_KEY_SECRET).strip()
+        key = _dbutils(profile).secrets.get(secret_scope, API_KEY_SECRET).strip()
     except Exception as exc:  # noqa: BLE001 - no scope, no key, no permission: go unauthenticated
         log.warning(
             "no data.gov.sg key from secret scope %r (%s); running at the lowest rate limit",
@@ -118,6 +112,35 @@ def resolve_api_key(secret_scope: str | None, profile: str | None = None) -> str
         return None
     log.info("data.gov.sg API key from secret scope %r", secret_scope)
     return key
+
+
+def _dbutils(profile: str | None):
+    """dbutils: the job's own on Databricks, else the workspace API's as `profile`."""
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        from databricks.sdk.runtime import dbutils
+
+        return dbutils
+    from databricks.sdk import WorkspaceClient
+
+    return WorkspaceClient(profile=profile).dbutils
+
+
+def read_secret(
+    secret_scope: str | None, key: str, profile: str | None = None
+) -> str | None:
+    """A secret from the scope, stripped, or None when there's no scope, secret or access (as resolve_api_key reads
+    its key). Never logs the value."""
+    if not secret_scope or (
+        not os.environ.get("DATABRICKS_RUNTIME_VERSION") and not profile
+    ):
+        return None
+    try:
+        return _dbutils(profile).secrets.get(secret_scope, key).strip() or None
+    except Exception as exc:  # noqa: BLE001 - no scope, no secret, no permission
+        log.debug(
+            "no secret %r in scope %r (%s)", key, secret_scope, type(exc).__name__
+        )
+        return None
 
 
 def setup(args: argparse.Namespace, *, share: float) -> tuple[Http, Sink]:

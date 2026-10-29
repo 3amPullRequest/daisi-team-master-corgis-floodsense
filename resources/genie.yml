@@ -1,0 +1,202 @@
+# The Genie space agencies ask in plain English. The app's "Ask a question" uses it through the Conversation API as the
+# app's service principal (resources/app.yml); people with workspace access can open it in Databricks too. It reads the
+# tables and views flood-scoreboard publishes in the ml schema (ml/publish.py), so run that job before deploying.
+# The space is defined here rather than in a .geniespace.json file so that its table names follow the target's catalog
+# and schema. IDs are fixed 32-hex strings, and every list of them is sorted, as the Genie API requires.
+resources:
+  genie_spaces:
+    agency_genie:
+      title: FloodSense for agencies
+      description: >-
+        Ask about PUB's flood alerts since Nov 2021, Singapore's flood-prone land, and how FloodSense's flash-flood
+        warnings compared with PUB's alerts and a simple rainfall rule, area by area and flood by flood.
+      warehouse_id: ${var.warehouse_id}
+      permissions:
+        - group_name: users
+          level: CAN_RUN
+      serialized_space:
+        version: 2
+        config:
+          sample_questions:
+            - id: "10000000000000000000000000000001"
+              question: ["Which areas had the most FloodSense false alarms after training?"]
+            - id: "10000000000000000000000000000002"
+              question: ["How much warning did PUB and FloodSense give before each flash flood in 2026?"]
+            - id: "10000000000000000000000000000003"
+              question: ["How does FloodSense compare with the rainfall rule?"]
+            - id: "10000000000000000000000000000004"
+              question: ["Which areas had the most PUB flood alerts in 2025?"]
+            - id: "10000000000000000000000000000005"
+              question: ["How has Singapore's flood-prone land changed since 2022?"]
+        data_sources:
+          tables:
+            - identifier: ${var.catalog}.${resources.schemas.ml.name}.flood_prone_trend
+            - identifier: ${var.catalog}.${resources.schemas.ml.name}.live_risk
+              column_configs:
+                - column_name: area
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: latest_rating
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: risk
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+            - identifier: ${var.catalog}.${resources.schemas.ml.name}.pub_alerts
+              column_configs:
+                - column_name: alert_type
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: area
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: kind
+                  enable_format_assistance: true
+                - column_name: lat
+                  exclude: true
+                - column_name: location
+                  enable_entity_matching: true
+                - column_name: lon
+                  exclude: true
+            - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard
+              column_configs:
+                - column_name: alerts_warned_before_pub
+                  synonyms: ["warned first", "early warning rate", "hit rate"]
+                - column_name: false_alarms_per_area_month
+                  synonyms: ["false alarm rate"]
+                - column_name: model
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: period
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: warning_level
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+            - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard_events
+              column_configs:
+                - column_name: area
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: event_kind
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: model
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: period
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: warning_level
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+            - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard_floods
+              column_configs:
+                - column_name: area
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: floodsense_lead_min
+                  synonyms: ["FloodSense lead time", "FloodSense warning time"]
+                - column_name: period
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: pub_warning_min
+                  synonyms: ["PUB lead time", "PUB warning time"]
+            - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard_warnings
+              column_configs:
+                - column_name: area
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: false_alarm
+                  synonyms: ["false alarms", "came to nothing"]
+                - column_name: model
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: period
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+                - column_name: warning_level
+                  enable_entity_matching: true
+                  enable_format_assistance: true
+        instructions:
+          text_instructions:
+            - id: "30000000000000000000000000000001"
+              content:
+                - |
+                  ## PURPOSE
+                  - Answer agencies' and town councils' questions about PUB's flood alerts since Nov 2021, flood-prone land, and how FloodSense's warnings compared with PUB's alerts and the rainfall rule.
+
+                  ## DISAMBIGUATION
+                  - FloodSense warnings with no level named means warning_level 'Moderate or above'; 'Elevated' is the stricter level, and 'Heavy rain' is the rainfall rule's.
+                  - "2026", "recent storms" or "the test" means period 'after_training'; "before 2026" or "history" means 'development'. With no period named, give after_training and say so.
+                  - A false alarm is a warning with no PUB alert while it was in force (scoreboard_warnings.false_alarm).
+                  - Every Moderate or Elevated rating is a warning for the next hour, so a warning runs from its first rating until an hour after its last. A lead time ("warned N minutes ahead") runs from that first rating to PUB's first alert.
+                  - "Right now" or "at the moment" means live_risk: risk is the warning in force, as the app's map shows it; latest_rating is the newest 5-minute rating alone.
+
+                  ## DATA QUALITY NOTES
+                  - Count only rows with judged = true unless asked otherwise: the rest sit where PUB posts were lost or FloodSense's inputs were missing.
+                  - scoreboard_warnings covers after_training only.
+                  - Times are Singapore time. Shares are 0 to 1.
+                  - live_risk is as fresh as the last scoring run: give its forecast_time.
+
+                  ## Instructions you must follow when providing summaries
+                  - Give shares as percentages, with the 95% interval where the scoreboard has one.
+                  - Name the period and the warning level the numbers are for.
+                  - FloodSense is an earlier heads-up on top of PUB's alerts, not an official warning.
+          example_question_sqls:
+            - id: "20000000000000000000000000000001"
+              question: ["Which areas had the most FloodSense false alarms after training?"]
+              sql:
+                - >-
+                  SELECT w.area, count_if(w.false_alarm) AS false_alarms, count(*) AS warnings
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard_warnings AS w
+                  WHERE w.period = 'after_training' AND w.model = 'FloodSense'
+                  AND w.warning_level = 'Moderate or above' AND w.judged
+                  GROUP BY w.area ORDER BY false_alarms DESC LIMIT 10
+            - id: "20000000000000000000000000000002"
+              question: ["How much warning did PUB and FloodSense give before each flash flood in 2026?"]
+              sql:
+                - >-
+                  SELECT f.flood_time, f.area, f.pub_warning_min, f.floodsense_lead_min, f.floodsense_before_pub,
+                  f.rule_lead_min, f.rule_before_pub, f.judged
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard_floods AS f
+                  WHERE f.period = 'after_training' ORDER BY f.flood_time
+            - id: "20000000000000000000000000000003"
+              question: ["How does FloodSense compare with the rainfall rule after training?"]
+              sql:
+                - >-
+                  SELECT s.model, s.warning_level, s.pub_alert_events, s.alerts_warned_before_pub,
+                  s.alerts_warned_before_pub_lo, s.alerts_warned_before_pub_hi, s.alert_mean_lead_min,
+                  s.false_alarms_per_area_month
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard AS s
+                  WHERE s.period = 'after_training' ORDER BY s.model, s.warning_level DESC
+            - id: "20000000000000000000000000000004"
+              question: ["Which areas had the most PUB flood alerts in 2025?"]
+              sql:
+                - >-
+                  SELECT a.area, count(*) AS alerts, count_if(a.kind = 'flash_flood') AS flash_floods
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.pub_alerts AS a
+                  WHERE year(a.alert_time) = 2025 GROUP BY a.area ORDER BY alerts DESC LIMIT 10
+            - id: "20000000000000000000000000000005"
+              question: ["What was PUB's average warning before a flash flood each year?"]
+              sql:
+                - >-
+                  SELECT year(f.flood_time) AS year, count(*) AS flash_floods,
+                  round(avg(f.pub_warning_min), 1) AS mean_pub_warning_min
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard_floods AS f
+                  GROUP BY year(f.flood_time) ORDER BY year
+            - id: "20000000000000000000000000000006"
+              question: ["How has Singapore's flood-prone land changed since 2022?"]
+              sql:
+                - >-
+                  SELECT t.year, t.hectares, t.change_ha, t.change_pct
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.flood_prone_trend AS t
+                  ORDER BY t.year
+            - id: "20000000000000000000000000000007"
+              question: ["Which areas have a FloodSense warning in force right now?"]
+              sql:
+                - >-
+                  SELECT r.area, r.risk, r.warning_until, r.latest_rating, r.chance, r.reason, r.forecast_time
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.live_risk AS r
+                  WHERE r.risk <> 'Low'
+                  ORDER BY CASE r.risk WHEN 'Elevated' THEN 0 ELSE 1 END, r.chance DESC

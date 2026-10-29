@@ -31,6 +31,13 @@ X_a the area's total exposure and rate, m and X the island's:
 
 gated.fit computes a prior inside each fold from that fold's training days only, so no out-of-fold score reads its own
 block's alerts, and one from the whole development period for the final models.
+
+Recency (23 Oct, `half_life_days`, off by default). PUB's alerts move between sensor sites every year: 25-43% of a
+year's site alert-days come from sites that never alerted before (2023-2026). So a prior can weigh each area-day's
+exposure and claim by 0.5 ** (days from a reference day / half_life_days), which makes old years count less without
+changing a day's rate. The final models' prior weighs back from its last day. A fold's prior weighs both ways from the
+middle of the block it predicts (`two_sided`), the out-of-fold stand-in for "the years nearest the one scored"; live,
+only the past exists, so it is a little kinder than the real thing.
 """
 
 from __future__ import annotations
@@ -98,14 +105,53 @@ def area_days(rows: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def area_prior(days: pd.DataFrame, *, flood_weight: float = 1.0) -> AreaPrior:
-    """The Bühlmann-Straub prior of every area in `days` (area_days rows; the module docstring has the formulas)."""
+ALERT_CLAIMS, FLOOD_CLAIMS = "alert", "flood"
+
+
+def recency(
+    day: pd.Series, half_life_days: float, reference=None, *, two_sided: bool = False
+) -> np.ndarray:
+    """Each day's weight, 0.5 ** (days from `reference` / half_life_days): from the last day of `day` by default, days
+    after the reference counting fully unless `two_sided` (module docstring)."""
+    if not half_life_days > 0:
+        raise ValueError(f"half_life_days is positive, not {half_life_days!r}")
+    day = pd.to_datetime(pd.Series(day)).dt.normalize()
+    ref = day.max() if reference is None else pd.Timestamp(reference).normalize()
+    gap = (ref - day).dt.days.to_numpy(dtype=float)
+    gap = np.abs(gap) if two_sided else np.clip(gap, 0.0, None)
+    # never quite 0, so a day's rate (claim / exposure) stays defined
+    return np.maximum(0.5 ** (gap / half_life_days), 1e-9)
+
+
+def area_prior(
+    days: pd.DataFrame,
+    *,
+    flood_weight: float = 1.0,
+    claims: str = ALERT_CLAIMS,
+    half_life_days: float | None = None,
+    reference=None,
+    two_sided: bool = False,
+) -> AreaPrior:
+    """The Bühlmann-Straub prior of every area in `days` (area_days rows; the module docstring has the formulas).
+
+    `claims` is what a day claims: ALERT_CLAIMS (1 for a day with a PUB alert, `flood_weight` for one with a flash
+    flood: the prior of the gated pair and of the ordinal model's alert rung) or FLOOD_CLAIMS (1 for a day with a flash
+    flood: the ordinal model's flood rung). Flood days are so few that the areas' flood rates differ mostly by chance,
+    and the formulas then give most of each area the island's rate. With `half_life_days`, each day's exposure and
+    claim are weighed by its `recency` from `reference` (`exposure_days` is then the weighed exposure)."""
     if days.empty:
         raise ValueError("no area-days to set a prior on")
     m = days["ticks"].to_numpy(dtype=float) / TICKS_PER_DAY
-    claim = days["alert"].to_numpy(dtype=float) + (flood_weight - 1.0) * days[
-        "flood"
-    ].to_numpy(dtype=float)
+    flood = days["flood"].to_numpy(dtype=float)
+    if claims == FLOOD_CLAIMS:
+        claim = flood
+    elif claims == ALERT_CLAIMS:
+        claim = days["alert"].to_numpy(dtype=float) + (flood_weight - 1.0) * flood
+    else:
+        raise ValueError(f"claims are {ALERT_CLAIMS!r} or {FLOOD_CLAIMS!r}, not {claims!r}")
+    if half_life_days is not None:
+        w = recency(days["day"], half_life_days, reference, two_sided=two_sided)
+        m, claim = m * w, claim * w
     per = (
         pd.DataFrame({"area": days["area"].to_numpy(), "m": m, "c": claim})
         .groupby("area", sort=True)
@@ -115,7 +161,7 @@ def area_prior(days: pd.DataFrame, *, flood_weight: float = 1.0) -> AreaPrior:
     total = per["exposure_days"].sum()
     island = float(per["claims"].sum() / total)
     if island <= 0:
-        raise ValueError("no alerts in the area-days to set a prior on")
+        raise ValueError(f"no {claims}s in the area-days to set a prior on")
 
     x = claim / m
     own = days["area"].map(rate).to_numpy(dtype=float)

@@ -1,9 +1,9 @@
 """What every FloodSense model reads and writes. Build silver and gold backwards from here.
 
 The unit of prediction is one NEA forecast area at one 5-minute tick: how likely is a PUB alert in that area within the
-next hour? The rainfall-rule baseline and the gated LightGBM read the same tables and are judged by the same scoreboard
-(scoreboard.py). The gated model only reads more feature columns: it adds columns to `area_features`, never a new
-grain, label or scoring rule.
+next hour? The rainfall-rule baseline and the learned models (the ordinal model, and the gated LightGBM pair before it)
+read the same tables and are judged by the same scoreboard (scoreboard.py). A learned model only reads more feature
+columns: it adds columns to `area_features`, never a new grain, label or scoring rule.
 
 Timestamps are SGT; naive ones are read as SGT.
 
@@ -40,6 +40,11 @@ N_AREAS = 47  # NEA 2-hour forecast areas (`area_metadata` of the two-hr-forecas
 TICK_MINUTES = 5
 HORIZON_MINUTES = 60  # a prediction at tick t is about PUB alerts in (t, t + 60 min]
 TIERS = ("Low", "Medium", "High")
+# Medium and High are cut-offs on a model's chance of a PUB alert within the hour. v10's and v12's are chosen when
+# they are fitted: Medium within the rainfall rule's false-alarm rate, High by its flood precision, which no cut-off
+# reaches, so High never fires. They can be fixed chances instead (gated.Settings.medium_chance, high_chance): v11 and
+# final_1 have Medium from 1% and High from 5%, final_2 Medium from 3% (DEVELOPER_NOTES, the tiers reviewed). The app
+# calls the tiers Low, Moderate and Elevated (content.ts, TIER_LABEL); the data keeps the names here.
 
 # Labels start with PUB's Telegram channel (created 26 Oct 2021), most of whose deleted history came back from web
 # archive captures. Where posts were never recovered, labels are missing, not zero (gold.label_ticks).
@@ -71,7 +76,12 @@ AREA_ALERTS_COLUMNS = {
     "kind": f"{WARNING!r} or {FLASH_FLOOD!r}",
     "posted_ts": "when the alert was posted, i.e. when the public could see it",
     "location": "PUB's location text, kept for case studies",
+    "lat": "latitude (WGS84) silver.location_gazetteer gives the location: where the alert is, for the features that "
+    "look around an area (PUB_ALERTS)",
+    "lon": "longitude (WGS84), with lat",
     "source": "'telegram' or 'api'",
+    "read_by": "how PUB's text became this alert: 'pattern' (labels/alert_text.py), 'manual' (a hand label in "
+    "data/static/telegram_manual_labels.csv) or 'jev' (Jev read a post no pattern reads; ingest/fallback.py)",
 }
 
 # gold.area_features: one row per area per tick. Every value must be known at its tick: a reading counts from
@@ -97,6 +107,140 @@ def _rain_doc(minutes: int) -> str:
     )
 
 
+# The rain of the hours before the last one: how wet the area already was when the last hour's rain began. With
+# rain_60min_mm they make the 3-, 6- and 24-hour totals, split at the last hour so the burst at hand isn't counted
+# twice. Per gauge, it is the sum of the gauge's 60-minute totals at the ticks 1, 2, ... hours before, each as NEA had
+# published it by its own tick, so never more than a live fetch at the tick had. Given the last hour, more rain before
+# it makes an alert *less* likely (gold.model_rows, 23 Oct: at 1-10 mm in the last hour, 2.5 alert rows per thousand
+# after two dry hours, 0.26 after 30 mm or more), as PUB alerts when a storm starts, not hours into it. So the models
+# may read it either way: no monotone constraint.
+PRIOR_RAIN_HOURS = (3, 6, 24)
+
+
+def prior_rain_column(hours: int) -> str:
+    return f"rain_prior_{hours}h_mm"
+
+
+def _prior_rain_doc(hours: int) -> str:
+    return (
+        f"the {hours}-hour rainfall total less the last hour's: the largest, among NEA gauges within "
+        f"{GAUGE_RADIUS_KM:g} km of the area's forecast point, of a gauge's {max(RAIN_WINDOWS_MINUTES)}-minute totals "
+        f"at the {hours - 1} whole hours before ts, each as NEA had published it by its own tick; null if no gauge in "
+        "reach reported in every one of those hours"
+    )
+
+
+# The storm so far (24 Oct): how long the rain over the area has gone on, and how much of it the drains haven't taken
+# away yet. PUB alerts as a storm starts: in gold.model_rows (24 Oct), with 30 mm or more in the last hour, 27.7 alert
+# rows per thousand in a storm's first 30 minutes and 5.4 after four hours; with 10-30 mm, 12.4 and 3.2. The rain windows
+# end an hour back, so they can't tell a storm's second hour from its fifth.
+# A storm over the area starts at a tick some gauge in reach has rain in its STORM_WINDOW_MINUTES window after
+# STORM_GAP_MINUTES without any, and lasts until STORM_GAP_MINUTES pass without. The gap is about how long a drain takes
+# to empty: PUB's flash floods subside within the hour (of April 2020's, the environment ministry said they "lasted
+# between 10 to 30 minutes"). The age is
+# capped at STORM_MAX_MINUTES, so live scoring, which reads a day of readings (features.PRIOR_RAIN_REACH_S), computes it
+# as gold does.
+STORM_WINDOW_MINUTES = 15
+STORM_GAP_MINUTES = 60
+STORM_MAX_MINUTES = 12 * 60
+STORM_AGE = "storm_age_min"
+# The rain surplus: per gauge, a leaky bucket that each reading fills when it arrives and that drains at a constant rate,
+# never below empty: the rain that came faster than the drains could take it, still to drain. The rate is the drains'
+# capacity as rain over the catchment, which PUB doesn't publish per drain. Its scale: drains built to the standards of
+# 2011 on take "up to 45 per cent higher rainfall intensities" than the older ones (a parliamentary reply of the
+# environment minister), news reports have 49-56 mm in an hour overwhelming drains (2014 on), and the rainfall rule warns
+# from 25 mm in 15 minutes (100 mm/h). So four rates, from a slow store that remembers the whole storm (10 mm/h) to the
+# rule's intensity (100 mm/h). As with the prior rain, the models may read the age and the surplus either way: no
+# monotone constraint.
+DRAIN_RATES_MM_H = (10, 25, 50, 100)
+
+
+def surplus_column(rate: int) -> str:
+    return f"rain_surplus_{rate}mmh_mm"
+
+
+def _surplus_doc(rate: int) -> str:
+    return (
+        f"the rain waiting to drain at {rate} mm/h: the largest, among NEA gauges within {GAUGE_RADIUS_KM:g} km of the "
+        f"area's forecast point, of a gauge's leaky bucket, which each reading fills at the first tick it counts (from "
+        f"{READING_LAG_MINUTES} min after its timestamp, once NEA had published it) and which empties at {rate} mm/h, "
+        "never below 0"
+    )
+
+
+RAIN_SURPLUS = tuple(surplus_column(r) for r in DRAIN_RATES_MM_H)
+STORM_HISTORY = (STORM_AGE, *RAIN_SURPLUS)
+
+# The drains' response (25 Oct): the surplus's bucket drains at its rate whatever it holds, so it models the water that
+# overflows a drain of that capacity, not the drain's water level, which PUB's 90% warnings are about. Here, per gauge,
+# a nonlinear reservoir (SWMM's runoff model) stands for the catchment upstream of the drains. Each reading arrives as
+# for the surplus; the first DRAIN_INITIAL_LOSS_MM of it after a dry spell wets the ground (SWMM's usual depression
+# storage on paved ground is 1.3-2.5 mm) and evaporates again at DRAIN_LOSS_RECOVERY_MM_DAY; the rest is stored, and
+# flows into the drains at a rate that rises with what is stored, as an open channel's flow rises with its depth
+# (Manning: flow ~ depth^5/3), dS/dt = rain - a * S^(5/3). So the store empties fast while full and slowly near empty, and
+# a storm's flow peaks sooner and higher the heavier it is. One parameter sets a: the response time, the reservoir's
+# time constant at DRAIN_REFERENCE_MM_H of steady rain, 10 min for a small drain's catchment and 30 min for a canal's
+# (DRAIN_RESPONSE_MINUTES). The flow, in mm/h of rain over the catchment, stands for the drain's level: a drain's level
+# rises with its flow, and the trees read only the order of a column's values. Flow beyond DRAIN_CAPACITY_MM_H fills an
+# overflow store that drains at the capacity left over: the surplus's bucket, fed by the drain's inflow, not the rain.
+# The flow is rounded to DRAIN_FLOW_STEP_MM_H, so the long tail of a store near empty reads 0 within hours (14 h after
+# the heaviest storm at 30 min), and live scoring, whose stores start empty a day back, computes what gold does.
+# And how far each flow is above its highest earlier in the storm (the rise): PUB posts a warning when a drain first
+# crosses 90%, so a level the storm has already passed is likely posted. The alert chance may only rise with all three
+# (gated.RISING).
+DRAIN_RESPONSE_MINUTES = (10, 30)
+DRAIN_REFERENCE_MM_H = 50  # the drains' capacity, as for the surplus: about the hourly rain that overwhelms them
+DRAIN_EXPONENT = 5 / 3
+DRAIN_INITIAL_LOSS_MM = 2.0
+DRAIN_LOSS_RECOVERY_MM_DAY = 4.0  # open water evaporates about 4 mm a day in Singapore
+DRAIN_CAPACITY_MM_H = 50
+DRAIN_FLOW_STEP_MM_H = 0.1
+
+
+def drain_flow_column(minutes: int) -> str:
+    return f"drain_flow_{minutes}min_mmh"
+
+
+def drain_overflow_column(minutes: int) -> str:
+    return f"drain_overflow_{minutes}min_mm"
+
+
+def drain_rise_column(minutes: int) -> str:
+    return f"drain_rise_{minutes}min_mmh"
+
+
+def _drain_doc(minutes: int) -> str:
+    return (
+        f"the flow into the drains (mm/h of rain over the catchment, to {DRAIN_FLOW_STEP_MM_H:g}) of a nonlinear "
+        f"reservoir with a {minutes}-minute response at {DRAIN_REFERENCE_MM_H} mm/h: the largest, among NEA gauges "
+        f"within {GAUGE_RADIUS_KM:g} km of the area's forecast point, of a gauge's store, which each reading fills at the "
+        f"first tick it counts, less the first {DRAIN_INITIAL_LOSS_MM:g} mm after a dry spell, and which flows out as "
+        f"its content to the power {DRAIN_EXPONENT:.3g}"
+    )
+
+
+def _overflow_doc(minutes: int) -> str:
+    return (
+        f"the water waiting to enter the drains: the largest, among the same gauges, of a store that the "
+        f"{drain_flow_column(minutes)} flow beyond {DRAIN_CAPACITY_MM_H} mm/h fills and that drains at the capacity "
+        "left over, never below 0"
+    )
+
+
+def _rise_doc(minutes: int) -> str:
+    return (
+        f"{drain_flow_column(minutes)} less its highest at the area's earlier ticks of the storm ({STORM_AGE}), 0 "
+        f"before the storm's first: above 0 while the storm sets a new high; null outside a storm"
+    )
+
+
+DRAIN_FLOW = tuple(drain_flow_column(m) for m in DRAIN_RESPONSE_MINUTES)
+DRAIN_OVERFLOW = tuple(drain_overflow_column(m) for m in DRAIN_RESPONSE_MINUTES)
+DRAIN_RISE = tuple(drain_rise_column(m) for m in DRAIN_RESPONSE_MINUTES)
+DRAIN_STATE = (*DRAIN_FLOW, *DRAIN_OVERFLOW)
+DRAIN_RESPONSE = (*DRAIN_STATE, *DRAIN_RISE)
+
+
 # Rain beyond the area's own gauges: storms close enough to arrive within the hour. Upwind is within
 # UPWIND_HALF_ANGLE_DEG of the direction the island-wide wind blows from; a mean wind under UPWIND_MIN_WIND_KN (calm,
 # or stations that disagree) gives no upwind.
@@ -104,11 +248,49 @@ NEARBY_RAIN_KM = (GAUGE_RADIUS_KM, 20.0)
 NEARBY_RAIN_MINUTES = 30
 UPWIND_HALF_ANGLE_DEG = 45.0
 UPWIND_MIN_WIND_KN = 2.0
+# PUB's own alerts around an area: a PUB alert for another area, at a place near the area's forecast point, often comes
+# minutes before the area's own, as a storm moves over neighbouring drains. 23 Oct 2026: 29% of PUB events had one
+# posted within 5 km in the hour before, and as a rule alone (every area within 5 km of a posted alert at Medium for 15
+# minutes) it flagged 21.4% of the development events at 0.65 false alarms per area-month. A post counts from
+# POST_LAG_MINUTES after its posting, as flood-live fetches the channel once a tick and scores ticks up to a tick after
+# its fetch. The area's own alerts don't count: its label is about them. Where a post of the window may be lost (the
+# label window missing), the count is unknown, not zero.
+NEARBY_ALERT_WINDOWS = ((5, 30), (5, 60), (10, 60))  # (km, minutes)
+POST_LAG_MINUTES = 5
+
+
+def nearby_alerts_column(km: int, minutes: int) -> str:
+    return f"pub_alerts_{km}km_{minutes}min"
+
+
+def _nearby_alerts_doc(km: int, minutes: int) -> str:
+    return (
+        f"PUB alerts (90% warnings and flash floods) posted for other areas at places within {km} km of the area's "
+        f"forecast point, in the {minutes} minutes ending {POST_LAG_MINUTES} min before ts; null where a post of that "
+        "window may be lost (gold.label_ticks), and in live scoring never"
+    )
+
+
+PUB_ALERTS = tuple(nearby_alerts_column(km, m) for km, m in NEARBY_ALERT_WINDOWS)
 # Weather: the mean over NEA's stations of each one's newest reading in the WEATHER_MINUTES ending
 # READING_LAG_MINUTES before the tick, published by the tick. Island-wide, as 19 stations can't give 47 areas their own.
 WEATHER_MINUTES = 5
 # silver.weather_1min's variables (pipeline/utilities/silver_sources.py WEATHER_VARIABLES, which a test keeps equal)
 WEATHER_READINGS = ("air_temp_c", "rel_humidity_pct", "wind_speed_kn", "wind_dir_deg")
+# The dew point, by the Magnus formula (Alduchov and Eskridge 1996), from each station's own temperature and humidity
+# before the mean over stations. Relative humidity moves with the temperature (it falls as the day warms with no change
+# in the air's moisture), so the models read the moisture as the dew point beside the temperature (23 Oct). All 38
+# stations report both (silver.weather_1min, 23 Oct).
+MAGNUS_A, MAGNUS_B_C = 17.625, 243.04
+
+
+def dew_point_c(air_temp_c, rel_humidity_pct):
+    """The Magnus dew point (deg C) of numbers or numpy arrays; features.tick_weather computes the same in Spark."""
+    import numpy as np
+
+    t, rh = np.asarray(air_temp_c, dtype=float), np.asarray(rel_humidity_pct, dtype=float)
+    gamma = np.log(rh / 100) + MAGNUS_A * t / (MAGNUS_B_C + t)
+    return MAGNUS_B_C * gamma / (MAGNUS_A - gamma)
 # Lightning: NEA lists strikes in a record every 2 minutes, published about 2 minutes after it closes, from
 # LIGHTNING_START. A tick's window is known only when every record of it exists.
 LIGHTNING_START = date(2025, 2, 1)
@@ -157,27 +339,68 @@ RAIN_CLASSES = {
     4: "thundery showers",
     5: "heavy thundery showers",
 }
+# The rain classes in fewer groups (24 Oct), each a list of the group of class 0, 1, ... 5. NEA's 24 wordings are already
+# 6 classes, and the models read the class as one number, so they can merge neighbours on their own; but class 3 is rare
+# (training, 24 Oct: 15 alert rows on 4 area-days, against 221 for class 4). The three groups are the meteorologist's
+# (dry, rain, thunder); the four keep thundery and heavy thundery apart, which alert at 4.0 and 11.4 rows per thousand.
+FORECAST_GROUPINGS = {
+    "forecast_rain_group3": (0, 1, 1, 1, 2, 2),
+    "forecast_rain_group4": (0, 0, 1, 1, 2, 3),
+}
+FORECAST_GROUP_NAMES = {
+    "forecast_rain_group3": "0 no rain, 1 rain or showers (classes 1-3), 2 thundery (4-5)",
+    "forecast_rain_group4": "0 no rain or light (classes 0-1), 1 moderate or heavy (2-3), 2 thundery showers (4), "
+    "3 heavy thundery showers (5)",
+}
+FORECAST_GROUPED = tuple(FORECAST_GROUPINGS)
+
+# The ground (25 Oct): what each area's land is like, from the national map (gold.area_terrain): one value per area, the
+# same at every tick. The area prior already gives each area its own alert rate (gated.py), so the ground can only add
+# where it changes what the weather does: a high tide on low land by the sea, a downpour on the hills above a valley.
+# SLA's contours are every 20 m (Contour_250K), so the land above HIGH_GROUND_M is the hills, and the national map has
+# no heights finer than that (its vertical control benchmarks carry none). Each column is measured over the area's land,
+# the Voronoi cell of its label point where its alerts are placed, as gold.area_land_use measures land use.
+AREA_TERRAIN = "area_terrain"
+HIGH_GROUND_M = 20
+MAP_LINE = ("high_ground_km", "relief_m", "road_share")  # from the map's lines: contours and roads
+MAP_POLYGON = ("coast_km", "waterway_km", "green_share")  # from its polygons: coast, waterways, parks
+MAP_FEATURES = (*MAP_LINE, *MAP_POLYGON)
 
 AREA_FEATURES_COLUMNS = {
     "area": "NEA forecast area",
     "ts": "tick, on a 5-minute boundary",
     **{rain_column(w): _rain_doc(w) for w in RAIN_WINDOWS_MINUTES},
+    **{prior_rain_column(h): _prior_rain_doc(h) for h in PRIOR_RAIN_HOURS},
+    STORM_AGE: f"minutes since the storm over the area began: the first tick a gauge within {GAUGE_RADIUS_KM:g} km had "
+    f"rain in its {STORM_WINDOW_MINUTES}-minute window after {STORM_GAP_MINUTES} min without, at most "
+    f"{STORM_MAX_MINUTES}; null when none had rain in the last {STORM_GAP_MINUTES} min",
+    **{surplus_column(r): _surplus_doc(r) for r in DRAIN_RATES_MM_H},
+    **{drain_flow_column(m): _drain_doc(m) for m in DRAIN_RESPONSE_MINUTES},
+    **{drain_overflow_column(m): _overflow_doc(m) for m in DRAIN_RESPONSE_MINUTES},
+    **{drain_rise_column(m): _rise_doc(m) for m in DRAIN_RESPONSE_MINUTES},
     "rain_gauges": f"gauges within {GAUGE_RADIUS_KM:g} km whose readings count in the {max(RAIN_WINDOWS_MINUTES)}-"
     "minute window",
     "forecast_rain_class": "NEA's 2-hour forecast for the area, the newest published by ts and still valid, as its "
     "rain class: "
     + ", ".join(f"{k} {v}" for k, v in RAIN_CLASSES.items())
     + "; null if none was valid",
+    **{
+        name: f"forecast_rain_class in fewer groups: {FORECAST_GROUP_NAMES[name]}; null with it"
+        for name in FORECAST_GROUPED
+    },
     "forecast_age_min": "minutes from that forecast's publication to ts; null with it",
     "rain_nearby_30min_mm": f"largest {NEARBY_RAIN_MINUTES}-minute rainfall total among NEA gauges "
     f"{NEARBY_RAIN_KM[0]:g}-{NEARBY_RAIN_KM[1]:g} km from the area's forecast point, from the readings published by "
     "ts as for the rain columns: rain close enough to arrive within the hour; 0 if none of those gauges rained",
     "rain_upwind_30min_mm": f"the same, among those gauges within {UPWIND_HALF_ANGLE_DEG:g} degrees of the direction "
     f"the wind blows from (wind_u_kn, wind_v_kn); null when the wind is unknown or under {UPWIND_MIN_WIND_KN:g} knots",
+    **{nearby_alerts_column(km, m): _nearby_alerts_doc(km, m) for km, m in NEARBY_ALERT_WINDOWS},
     "air_temp_c": "mean air temperature (deg C) over NEA's weather stations, each station's newest reading in the "
     f"{WEATHER_MINUTES} minutes ending {READING_LAG_MINUTES} min before ts that NEA had published by ts; null if no "
     "station had one",
     "rel_humidity_pct": "mean relative humidity (%), read as air_temp_c",
+    "dew_point_c": "mean dew point (deg C) over the stations, each station's from its own air temperature and "
+    "relative humidity (Magnus formula) before the mean, read as air_temp_c",
     "wind_u_kn": "mean wind over the stations, read as air_temp_c: the eastward component (knots) of NEA's 10-minute "
     "means",
     "wind_v_kn": "its northward component (knots)",
@@ -185,11 +408,21 @@ AREA_FEATURES_COLUMNS = {
     "tide_height_m": "predicted tide at Tanjong Pagar at ts, metres above Chart Datum (gold.tide_levels.predicted_m): "
     "the astronomical tide, known in advance, so it is the same live and in replays; the same for every area",
     "minutes_to_high_tide": "minutes from ts to the next predicted high water at Tanjong Pagar",
+    "high_ground_km": f"mean distance (km) from the area's land to the nearest contour of {HIGH_GROUND_M} m or more on "
+    "the national map: how far the hills are (gold.area_terrain); the same at every tick",
+    "relief_m": f"the highest contour within {GAUGE_RADIUS_KM:g} km of the area's forecast point (metres, a multiple "
+    f"of 20), 0 where none of {HIGH_GROUND_M} m or more is: how high the hills around it rise",
+    "road_share": "share of the area's land cells (H3, about 50 m across) that an expressway, slip road or major road "
+    "of the national map crosses",
+    "coast_km": "mean distance (km) from the area's land to the sea, the edge of Singapore's coastal outlines",
+    "waterway_km": "mean distance (km) from the area's land to the nearest canal or river of the national map",
+    "green_share": "share of the area's land in the national map's parks and nature reserves",
 }
 # gold.area_features columns the models don't read yet: lightning (16 Oct). To feed it to them, drop it from here and
 # give it its monotone constraint and its reason in gated.py.
 HELD_BACK_FEATURES = tuple(lightning_column(km) for km in LIGHTNING_RADII_KM)
-# The columns a model reads, each as it stood at the tick. The gated pair also reads the area and the SGT hour.
+# The columns a model may read, each as it stood at the tick. Every model also reads the SGT hour, and leaves out what
+# its feature set does (BASE_FEATURES or EXTENDED_FEATURES, below).
 MODEL_FEATURES = tuple(
     c for c in AREA_FEATURES_COLUMNS if c not in ("area", "ts", *HELD_BACK_FEATURES)
 )
@@ -204,13 +437,34 @@ REQUIRED_FEATURES = (
     "forecast_age_min",
 )
 OPTIONAL_FEATURES = tuple(c for c in MODEL_FEATURES if c not in REQUIRED_FEATURES)
-# Model features by source, so flood-train can fit the pair without a group and measure what it adds.
+PRIOR_RAIN = tuple(prior_rain_column(h) for h in PRIOR_RAIN_HOURS)
+# The two feature sets a model is fitted on ('base' and 'extended' in a flood-train spec), both within MODEL_FEATURES,
+# which gold provides. BASE_FEATURES is what the gated pair has read since 16 Oct (v5): the default, as the tree models
+# did best on it (23 Oct, out of fold: the pair flagged 30.1% of events before PUB on it, 25.5% on the extended set).
+# EXTENDED_FEATURES swaps relative humidity, which is mostly the temperature again, for the dew point, and adds the prior
+# rain; it helped the logistic model by a hair (ARCHITECTURE.md).
+# Neither reads PUB's alerts nearby (PUB_ALERTS, 23 Oct), the storm so far (STORM_HISTORY) or the forecast groups
+# (FORECAST_GROUPED, 24 Oct), the ground (MAP_FEATURES) or the drains' response (DRAIN_RESPONSE, 25 Oct): a spec adds
+# them with add= (add=pub_alerts, add=storm, add=map_line, add=drain, ...; train.py).
+OUTSIDE_SETS = (*PUB_ALERTS, *STORM_HISTORY, *DRAIN_RESPONSE, *FORECAST_GROUPED, *MAP_FEATURES)
+BASE_FEATURES = tuple(c for c in MODEL_FEATURES if c not in ("dew_point_c", *PRIOR_RAIN, *OUTSIDE_SETS))
+EXTENDED_FEATURES = tuple(c for c in MODEL_FEATURES if c not in ("rel_humidity_pct", *OUTSIDE_SETS))
+# Model features by source, so flood-train can fit a model without a group and measure what it adds.
 FEATURE_GROUPS = {
     "rain": (*(rain_column(w) for w in RAIN_WINDOWS_MINUTES), "rain_gauges"),
+    "antecedent": PRIOR_RAIN,
+    "storm": (STORM_AGE,),
+    "surplus": RAIN_SURPLUS,
+    "drain": DRAIN_STATE,
+    "rise": DRAIN_RISE,
     "forecast": ("forecast_rain_class", "forecast_age_min"),
+    "forecast_groups": FORECAST_GROUPED,
     "nearby": ("rain_nearby_30min_mm", "rain_upwind_30min_mm"),
-    "weather": ("air_temp_c", "rel_humidity_pct", "wind_u_kn", "wind_v_kn"),
+    "pub_alerts": PUB_ALERTS,
+    "weather": ("air_temp_c", "rel_humidity_pct", "dew_point_c", "wind_u_kn", "wind_v_kn"),
     "tide": ("tide_height_m", "minutes_to_high_tide"),
+    "map_line": MAP_LINE,
+    "map_polygon": MAP_POLYGON,
 }
 
 # Whether a tick's label is known. Its label reads PUB alerts stamped in (ts, ts + HORIZON]; PUB posts an alert at
@@ -223,18 +477,21 @@ POST_DELAY_MAX_MINUTES = 60
 STAMP_AHEAD_MINUTES = 10
 RECORDED, MISSING = "recorded", "missing"
 POSTS_NOT_RECOVERED = "posts not recovered"  # an id gap: posts PUB deleted before the web archive captured them
+# a post was recovered but can't be read: no pattern or hand label reads it, and Jev failed on it (its endpoint missing
+# included), so it may hold an alert nobody knows of
+UNREAD_POST = "post not read"
 UNPLACED_ALERT = (
     "unplaced alert"  # an alert came, but its location isn't placed in an area yet
 )
-MISSING_REASONS = (POSTS_NOT_RECOVERED, UNPLACED_ALERT)
+MISSING_REASONS = (POSTS_NOT_RECOVERED, UNREAD_POST, UNPLACED_ALERT)
 
 # gold.label_ticks: one row per tick from LABELS_START to the last complete midnight. The same for every area.
 LABEL_TICKS = "label_ticks"
 LABEL_TICKS_COLUMNS = {
     "ts": "tick, on a 5-minute boundary",
     "label_window": f"{RECORDED!r} if every post that could carry an alert for (ts, ts + {HORIZON_MINUTES} min] "
-    f"was recovered and every alert in it is placed, else {MISSING!r}",
-    "missing_reason": f"why the window is missing: {POSTS_NOT_RECOVERED!r} (takes precedence) or "
+    f"was recovered and read and every alert in it is placed, else {MISSING!r}",
+    "missing_reason": f"why the window is missing, first that applies: {POSTS_NOT_RECOVERED!r}, {UNREAD_POST!r} or "
     f"{UNPLACED_ALERT!r}; null when recorded",
     "split": f"{' / '.join(SPLITS)}: train before the embargo, test from TEST_START to SPLIT_END",
 }
@@ -299,7 +556,15 @@ PREDICTIONS_COLUMNS = {
     "reason": "plain-English trigger shown in the app",
 }
 
-# The gated LightGBM pair, registered in Unity Catalog as <catalog>.<ml schema>.floodsense.
+# The registered model, in Unity Catalog as <catalog>.<ml schema>.floodsense: the ordinal model from 23 Oct
+# (ordinal.py), the gated LightGBM pair before (gated.py; v1 to v5).
 REGISTERED_MODEL = "floodsense"
 # UC aliases: the live model, and the newest one trained
 CHAMPION, CHALLENGER = "champion", "challenger"
+
+
+def version_name(model: str, version, aliases=()) -> str:
+    """What ml.predictions and the app call a registered version: the alias the user named it by (final_1, 25 Oct),
+    when it has one besides CHAMPION and CHALLENGER, else '<model> v<version>'."""
+    named = sorted(set(aliases or ()) - {CHAMPION, CHALLENGER})
+    return named[0] if named else f"{model} v{version}"

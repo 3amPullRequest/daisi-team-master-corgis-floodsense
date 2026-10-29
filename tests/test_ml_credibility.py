@@ -35,6 +35,29 @@ def test_buhlmann_straub_by_hand():
     assert t.loc["B", "offset"] == pytest.approx(math.log(1 / 3))
 
 
+def test_recency_halves_a_day_s_weight_every_half_life():
+    day = pd.Series(pd.to_datetime(["2024-01-01", "2024-07-01", "2025-01-01"]))
+    w = K.recency(day, 366)  # from the last day: 2024 was a leap year
+    assert w.tolist() == pytest.approx([0.5, 0.5 ** (184 / 366), 1.0])
+    # two-sided from a reference in the middle; one-sided, later days count fully
+    mid = pd.Timestamp("2024-07-01")
+    assert K.recency(day, 182, mid, two_sided=True).tolist() == pytest.approx([0.5, 1.0, 0.5 ** (184 / 182)])
+    assert K.recency(day, 182, mid).tolist() == pytest.approx([0.5, 1.0, 1.0])
+    with pytest.raises(ValueError):
+        K.recency(day, 0)
+
+
+def test_a_half_life_trusts_an_area_s_recent_years_more():
+    # A alerted only in its first 40 days, B only in its last 40, on the same 120 days
+    early, late = [1] * 40 + [0] * 80, [0] * 80 + [1] * 40
+    flat = K.area_prior(days({"A": early, "B": late, "C": [0, 1, 0] * 40})).table.set_index("area")
+    recent = K.area_prior(days({"A": early, "B": late, "C": [0, 1, 0] * 40}), half_life_days=20).table.set_index("area")
+    # alike without recency (the same 40 alert days each); with it, B's recent alerts count for far more than A's old ones
+    assert flat.loc["A", "prior_rate"] == pytest.approx(flat.loc["B", "prior_rate"])
+    assert recent.loc["B", "prior_rate"] > recent.loc["A", "prior_rate"]
+    assert np.isfinite(recent["offset"]).all()
+
+
 def test_an_area_without_alerts_gets_a_finite_prior_below_the_others():
     claims = {"wet": [1, 0, 1, 1, 0, 1] * 5, "dry": [0] * 30, "mid": [0, 0, 1, 0, 0, 0] * 5}
     t = K.area_prior(days(claims)).table.set_index("area")
@@ -105,3 +128,18 @@ def test_offsets_of_an_unknown_area_are_the_islands():
 def test_no_alerts_no_prior():
     with pytest.raises(ValueError, match="no alerts"):
         K.area_prior(days({"A": [0, 0], "B": [0, 0]}))
+
+
+def test_the_flood_rung_prior_counts_flood_days_and_shrinks_them_to_the_island():
+    # two flood days among three areas' alert days: the areas' flood rates differ by chance, so all get the island's
+    d = days({"A": [1, 1, 0, 0], "B": [1, 0, 0, 0], "C": [0, 0, 0, 0]}, floods={"A": [1, 0, 0, 0], "B": [1, 0, 0, 0]})
+    flood = K.area_prior(d, claims=K.FLOOD_CLAIMS)
+    assert flood.island_rate == pytest.approx(2 / 12)
+    alert = K.area_prior(d)
+    assert alert.island_rate == pytest.approx(3 / 12)
+    # an area that never flooded keeps most of the island's flood rate
+    assert flood.table.set_index("area").loc["C", "prior_rate"] >= 0.5 * flood.island_rate
+    with pytest.raises(ValueError, match="claims are"):
+        K.area_prior(d, claims="warning")
+    with pytest.raises(ValueError, match="no floods"):
+        K.area_prior(days({"A": [1, 0]}), claims=K.FLOOD_CLAIMS)

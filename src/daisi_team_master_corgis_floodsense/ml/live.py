@@ -12,7 +12,11 @@ what the app showed is what scorekeeping judges.
 Which model: the registered pair's @champion, else the rainfall rule from the newest flood-train run (its fitted
 threshold, logged as the `rule` parameter), so the app has tiers from the first trained rule on. A pair saved before a
 feature group existed still loads (GatedPair.inputs). An area with no gauge reporting in the last hour has no feature
-row and is Low, as in training.
+row and is Low, as in training. Its rows in ml.predictions carry the name the user gave the version as an alias
+(final_1), else "<model> v<version>" (contract.version_name).
+
+Then broadcast.run sends the warnings that are news at the newest tick: a post to the Telegram channel, and emails and
+texts to the app's subscribers. A failure there is logged and never fails the scoring.
 """
 
 from __future__ import annotations
@@ -79,15 +83,18 @@ def live_model(full_name: str, short_name: str, experiment: str):
 
     mlflow.set_registry_uri("databricks-uc")
     try:
-        version = (
-            mlflow.MlflowClient()
-            .get_model_version_by_alias(full_name, C.CHAMPION)
-            .version
+        champion = mlflow.MlflowClient().get_model_version_by_alias(
+            full_name, C.CHAMPION
         )
         model = mlflow.pyfunc.load_model(f"models:/{full_name}@{C.CHAMPION}")
-        name = f"{short_name} v{version}"
+        # by the alias the user named it by (final_1), else by its version number
+        name = C.version_name(short_name, champion.version, champion.aliases)
+        # exactly the columns its signature declares: a model logged before a gold column existed doesn't know it
+        columns = model.metadata.get_input_schema().input_names()
         log.info("scoring with %s (@%s)", name, C.CHAMPION)
-        return name, lambda rows: model.predict(model_rows(rows)).assign(model=name)
+        return name, lambda rows: model.predict(model_rows(rows)[columns]).assign(
+            model=name
+        )
     # no champion yet, or it doesn't load (any reason): fall back to the rule, loudly
     except Exception as exc:  # noqa: BLE001
         log.warning(
@@ -122,12 +129,17 @@ def feature_rows(
 ) -> pd.DataFrame:
     """Every area at every tick in [first, last], with its gold.area_features columns (null where gold would have no
     row), computed from silver as flood-gold computes them. Lightning, which the models don't read yet
-    (contract.HELD_BACK_FEATURES), is left null."""
+    (contract.HELD_BACK_FEATURES), is left null. PUB's alerts nearby are counted from silver.area_alerts, which the
+    refresh before this task has just brought up to the newest posts, so live scoring knows them at every tick. The
+    ground is gold.area_terrain's, the same table gold reads."""
     from pyspark.sql import functions as F
 
     lo, hi = _epoch(first), _epoch(last)
+    # the prior rain sums each gauge's hour totals back a day, so its windows need that much more of the readings
     readings = spark.read.table(f"{silver}.rainfall_5min").where(
-        FT.seconds("ts").between(lo - FT.RAIN_REACH_S, hi - FT.LAG_S)
+        FT.seconds("ts").between(
+            lo - FT.RAIN_REACH_S - FT.PRIOR_RAIN_REACH_S, hi - FT.LAG_S
+        )
     )
     forecasts = spark.read.table(f"{silver}.forecasts_2h").where(
         FT.seconds("updated_at").between(lo - FT.FORECAST_REACH_S, hi)
@@ -146,8 +158,20 @@ def feature_rows(
     nearby = FT.nearby_rain(
         rain, areas, spark.read.table(f"{silver}.rain_stations"), weather
     )
+    posted = spark.read.table(f"{silver}.{C.AREA_ALERTS}").where(
+        F.unix_timestamp(F.coalesce("posted_ts", "alert_ts")).between(
+            lo - FT.NEARBY_ALERT_REACH_S, hi - FT.POST_LAG_S
+        )
+    )
     rows = FT.area_features(
-        rain, reach, FT.forecast_ticks(forecasts), tide, nearby, weather
+        rain,
+        reach,
+        FT.forecast_ticks(forecasts),
+        tide,
+        nearby,
+        weather,
+        alerts_nearby=FT.nearby_alerts(posted, areas),
+        terrain=spark.read.table(f"{gold}.{C.AREA_TERRAIN}"),
     ).where(FT.seconds("ts").between(lo, hi))
     grid = areas.select("area").crossJoin(
         spark.range(1)
@@ -197,21 +221,47 @@ def main(argv: list[str] | None = None) -> int:
     }
     if span is None:
         log.info("nothing new to score: %s", json.dumps(summary))
-        return 0
-    first, last = span
-    rows = feature_rows(spark, gold, silver, first, last)
-    preds = predict(rows)
-    write_predictions(spark, table, preds, ticks=(first, last))
-    summary |= {
-        "first": str(first),
-        "last": str(last),
-        "rows": len(preds),
-        "areas_with_features": int(rows.groupby("ts")["rain_gauges"].count().min()),
-        "warned": int((preds["tier"] != "Low").sum()),
-        "lag_min": float((now - last) / pd.Timedelta(minutes=1)),
-    }
-    log.info("scored: %s", json.dumps(summary))
+    else:
+        first, last = span
+        rows = feature_rows(spark, gold, silver, first, last)
+        preds = predict(rows)
+        write_predictions(spark, table, preds, ticks=(first, last))
+        scored = last
+        summary |= {
+            "first": str(first),
+            "last": str(last),
+            "rows": len(preds),
+            "areas_with_features": int(
+                rows.groupby("ts")["rain_gauges"].count().min()
+            ),
+            "warned": int((preds["tier"] != "Low").sum()),
+            "lag_min": float((now - last) / pd.Timedelta(minutes=1)),
+        }
+        log.info("scored: %s", json.dumps(summary))
+    _broadcast(spark, args, name, scored, now)
     return 0
+
+
+def _broadcast(spark, args, model: str, tick, now: pd.Timestamp) -> None:
+    """Send the warnings that are news at `tick` (broadcast.py); the scores are already written, so any error is only
+    logged."""
+    from . import broadcast
+
+    try:
+        senders = broadcast.Senders.from_scope(args.secret_scope, args.warning_channel)
+        app = f"{args.catalog}.{args.app_schema}" if args.app_schema else None
+        sent = broadcast.run(
+            spark,
+            ml=f"{args.catalog}.{args.ml_schema}",
+            app=app,
+            model=model,
+            tick=tick,
+            now=now,
+            senders=senders,
+        )
+        log.info("broadcast: %s", json.dumps(sent, default=str))
+    except Exception:  # noqa: BLE001 - never fail a run whose scores are written
+        log.exception("broadcast failed; the scores are written")
 
 
 def _epoch(ts: pd.Timestamp) -> int:
@@ -236,6 +286,19 @@ def _parser() -> argparse.ArgumentParser:
         help="flood-train's MLflow experiment, for the rule fallback",
     )
     parser.add_argument("--catch-up-minutes", type=int, default=CATCH_UP_MINUTES)
+    parser.add_argument(
+        "--secret-scope",
+        help="secret scope with the senders' credentials (broadcast.py); none: nothing is sent",
+    )
+    parser.add_argument(
+        "--warning-channel",
+        default="@daisi_floodsense",
+        help="Telegram channel the warnings are posted to",
+    )
+    parser.add_argument(
+        "--app-schema",
+        help="schema with the app's warning subscriptions; none: no emails or texts",
+    )
     return parser
 
 

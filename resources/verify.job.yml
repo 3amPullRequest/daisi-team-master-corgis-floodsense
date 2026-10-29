@@ -1,0 +1,49 @@
+# Checks a registered pair before it goes live, and logs what it said before every real flash flood
+# (src/daisi_team_master_corgis_floodsense/ml/verify.py). Manual, after flood-train has registered a pair:
+#   databricks bundle run train -t dev -p flood_dev --params promote=false   # @challenger only
+#   databricks bundle run verify -t dev -p flood_dev                          # checks and the flood table
+#   databricks bundle run verify -t dev -p flood_dev --params promote=true    # and @champion, if every check passes
+# The run fails if a check does. Its MLflow run, "verify v<version>", holds checks.json and floods.json.
+resources:
+  jobs:
+    verify:
+      name: flood-verify
+      max_concurrent_runs: 1
+      timeout_seconds: 1800
+      parameters:
+        - name: alias
+          default: "challenger"   # the version to verify
+        - name: baseline
+          default: "champion"   # the pair to compare it with on every flood: an alias or a version; "" for none
+        - name: promote
+          default: "false"   # "true" moves @champion to it if every check passes and it beats the rule
+      tasks:
+        - task_key: verify
+          environment_key: ml
+          spark_python_task:
+            python_file: ../src/ml/verify.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --gold-schema
+              - ${resources.schemas.gold.name}
+              - --silver-schema
+              - ${resources.schemas.silver.name}
+              - --ml-schema
+              - ${resources.schemas.ml.name}
+              - --experiment
+              - ${resources.experiments.training.name}
+              - --model
+              - ${resources.registered_models.floodsense.name}
+              - --alias
+              - "{{job.parameters.alias}}"
+              - --baseline
+              - "{{job.parameters.baseline}}"
+              - --promote
+              - "{{job.parameters.promote}}"
+      environments:
+        - environment_key: ml   # as flood-train's, which logged the model
+          spec:
+            environment_version: "6"   # Python 3.12, pandas 2.3, scikit-learn 1.7, mlflow-skinny 3.12
+            dependencies:
+              - lightgbm==4.7.0

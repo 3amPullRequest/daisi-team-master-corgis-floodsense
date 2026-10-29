@@ -11,8 +11,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from daisi_team_master_corgis_floodsense import features
 from daisi_team_master_corgis_floodsense.ml import contract as C
-from daisi_team_master_corgis_floodsense.ml import gated
+from daisi_team_master_corgis_floodsense.ml import floods, gated
 from daisi_team_master_corgis_floodsense.ml.scoreboard import score, tick_labels
 from daisi_team_master_corgis_floodsense.ml.split import make_split
 
@@ -79,18 +80,37 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
                         .round(1)
                         for w in C.RAIN_WINDOWS_MINUTES
                     },
+                    # the hours before the last one, as gold sums them; unknown until enough hours are in
+                    **{
+                        C.prior_rain_column(h): (
+                            seen.rolling(12 * h).sum() - seen.rolling(12).sum()
+                        ).round(1)
+                        for h in C.PRIOR_RAIN_HOURS
+                    },
+                    # the storm so far and the drains' response, as gold computes them from the gauge's readings
+                    # (features.storm_age, rain_surplus, gauge_drains), one gauge per area here
+                    **storm_so_far(seen.to_numpy()),
                     "rain_gauges": 3,
                     "forecast_rain_class": forecast,
+                    **{
+                        name: np.asarray(grouping)[forecast]
+                        for name, grouping in C.FORECAST_GROUPINGS.items()
+                    },
                     "forecast_age_min": 10.0,
                     "rain_nearby_30min_mm": nearby.round(1),
                     "rain_upwind_30min_mm": (0.8 * nearby).round(1),
                     "air_temp_c": np.where(landed, 27 + 4 * day_heat, np.nan),
                     "rel_humidity_pct": np.where(landed, 85 - 15 * day_heat, np.nan),
+                    "dew_point_c": np.where(
+                        landed, C.dew_point_c(27 + 4 * day_heat, 85 - 15 * day_heat), np.nan
+                    ),
                     "wind_u_kn": np.where(landed, -3.0, np.nan),
                     "wind_v_kn": np.where(landed, 2.0, np.nan),
                     # a semidiurnal tide (12.42 h), the same everywhere; storms don't follow it here
                     "tide_height_m": 1.7 + np.cos(2 * np.pi * minutes / 745.2),
                     "minutes_to_high_tide": (-minutes) % 745.2,
+                    # the area's ground, the same at every tick (gold.area_terrain)
+                    **ground(area),
                 }
             )
         )
@@ -100,10 +120,83 @@ def synthetic(seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
     alerts = pd.DataFrame(alerts, columns=["area", "alert_ts", "kind"]).astype(
         {"area": object}
     )
+    # PUB's alerts posted for other areas, as gold counts them (here every other area is near, and an alert is posted
+    # at its stamp)
+    lag = pd.Timedelta(minutes=C.POST_LAG_MINUTES)
+    every = np.sort(alerts["alert_ts"].to_numpy(dtype="datetime64[ns]"))
+    for km, minutes in C.NEARBY_ALERT_WINDOWS:
+        counts = np.zeros(len(rows), dtype=int)
+        for area in AREAS:
+            at = (rows["area"] == area).to_numpy()
+            end = (rows.loc[at, "ts"] - lag).to_numpy(dtype="datetime64[ns]")
+            start = end - np.timedelta64(minutes, "m")
+            own = np.sort(alerts.loc[alerts["area"] == area, "alert_ts"].to_numpy(dtype="datetime64[ns]"))
+            n = lambda times: np.searchsorted(times, end, "right") - np.searchsorted(times, start, "right")
+            counts[at] = n(every) - n(own)
+        rows[C.nearby_alerts_column(km, minutes)] = counts
     rows["alert_label"] = tick_labels(rows, alerts)
     rows["flood_label"] = tick_labels(rows, alerts, kinds=[C.FLASH_FLOOD])
     rows["split"] = "train"
     return rows, alerts
+
+
+def ground(area: str) -> dict[str, float]:
+    """contract.MAP_FEATURES of an area, one value each: the flood-prone areas lie low by the sea, under hills."""
+    i = sorted(AREAS).index(area)
+    prone = area in FLOOD_PRONE
+    return {
+        "high_ground_km": 0.8 if prone else 2.5 + i,
+        "relief_m": 60.0 if prone else 20.0,
+        "road_share": 0.05 + 0.01 * i,
+        "coast_km": 0.6 if prone else 3.0 + i,
+        "waterway_km": 0.3 + 0.1 * i,
+        "green_share": 0.1 if prone else 0.3,
+    }
+
+
+def storm_so_far(seen: np.ndarray) -> dict[str, np.ndarray]:
+    """contract.STORM_HISTORY of one gauge's readings at their ticks (mm per 5 minutes, the newest READING_LAG back):
+    the storm's age from the tick its 15-minute window first had rain after an hour without, and the leaky bucket at
+    each drain rate. The plain recursions that features.py computes with windows."""
+    window = pd.Series(seen).rolling(C.STORM_WINDOW_MINUTES // 5, min_periods=1).sum().to_numpy()
+    gap, cap = C.STORM_GAP_MINUTES // 5, C.STORM_MAX_MINUTES
+    age = np.full(len(seen), np.nan)
+    start = last_wet = None
+    for i, wet in enumerate(window > 0):
+        if wet:
+            if last_wet is None or i - last_wet > gap:
+                start = i
+            last_wet = i
+        if last_wet is not None and i - last_wet <= gap:
+            age[i] = min(5.0 * (i - start), cap)
+    out = {C.STORM_AGE: age}
+    for rate in C.DRAIN_RATES_MM_H:
+        bucket, level = np.zeros(len(seen)), 0.0
+        for i, mm in enumerate(seen):
+            level = max(0.0, level + mm - rate / 12)
+            bucket[i] = level
+        out[C.surplus_column(rate)] = bucket
+    # the drains: features.gauge_drains over the gauge's ticks, and each flow's rise over its highest earlier in the
+    # storm, as far back as the age's cap
+    drains = features.gauge_drains(
+        pd.DataFrame({"station_id": "S1", "tick_s": 300 * np.arange(len(seen)), "mm": seen})
+    )
+    reach = C.STORM_MAX_MINUTES // 5
+    for k, flow_name, overflow_name, rise_name in zip(
+        C.DRAIN_RESPONSE_MINUTES, C.DRAIN_FLOW, C.DRAIN_OVERFLOW, C.DRAIN_RISE
+    ):
+        flow = drains[f"d{k}"].to_numpy()
+        out[flow_name], out[overflow_name] = flow, drains[f"o{k}"].to_numpy()
+        rise = np.full(len(seen), np.nan)
+        start = None
+        for i in range(len(seen)):
+            if np.isnan(age[i]):
+                continue
+            start = i - int(round(age[i] / 5)) if age[i] < cap else start
+            earlier = flow[max(start, i - reach) : i]
+            rise[i] = round(flow[i] - (earlier.max() if len(earlier) else 0.0), 1)
+        out[rise_name] = rise
+    return out
 
 
 ROWS, ALERTS = synthetic()
@@ -144,6 +237,36 @@ def test_out_of_fold_tiers_flag_storms_within_the_false_alarm_budget(fitted):
     # the cut-offs are the curve's choice
     assert pair.medium_p in set(report.curve["medium_p"])
     assert 0 <= pair.quiet_p < pair.medium_p < 1
+
+
+def test_out_of_fold_the_pair_warns_before_each_flood_with_lead_time(fitted):
+    # every flood of the development period, with the lead the out-of-fold pair gave it: the lead time given that a
+    # flood occurred, as the scoreboard's flood metrics count it
+    _, report = fitted
+    table = floods.flood_table(
+        report.predictions(warned_only=False), ALERTS, start=SPLIT.start, end=SPLIT.dev_end
+    )
+    flash = ALERTS[(ALERTS["kind"] == C.FLASH_FLOOD) & (ALERTS["alert_ts"] < SPLIT.dev_end)]
+    assert len(table) == len(flash) > 0  # one storm a day, so each flood is its own event
+    warned = table["lead_min"].notna()
+    assert warned.mean() >= 0.8
+    assert (table.loc[warned, "lead_min"] > 0).all()
+    board = score(report.predictions(), ALERTS, start=SPLIT.start, end=SPLIT.dev_end).metrics(ci=False)
+    assert floods.summary(table)["floods_mean_lead_min"] == pytest.approx(board["flood_mean_lead_min"])
+    assert table["before_pub"].mean() == pytest.approx(board["flood_flagged_before_pub"])
+
+
+def test_the_pair_gives_every_flood_a_tier_and_a_chance(fitted):
+    # the tier and chance the saved pair shows at each flood and at their peak in the hour before it
+    pair, _ = fitted
+    table = floods.flood_table(pair.predict(ROWS), ALERTS, start=START, end=TEST_START)
+    assert len(table) == (ALERTS["kind"] == C.FLASH_FLOOD).sum()
+    assert (table["ticks_scored"] == 12).all()
+    assert table["tier_at_flood"].isin(C.TIERS).all() and table["peak_tier"].isin(C.TIERS).all()
+    assert table["p_alert_at_flood"].between(0, 1).all() and table["peak_p_alert"].between(0, 1).all()
+    # a warning is in force at a flood exactly when a tick of its hour was Medium or High
+    assert (table["lead_min"].notna() == table["peak_tier"].isin(["Medium", "High"])).all()
+    assert (table.loc[table["peak_tier"] != "Low", "peak_p_alert"] >= pair.medium_p).all()
 
 
 def test_the_rater_learns_which_areas_flood(fitted):
@@ -209,9 +332,33 @@ def test_risk_only_rises_with_rain_the_forecast_and_the_tide():
     assert {
         *gated.RAIN,
         *gated.NEARBY_RAIN,
+        *C.PUB_ALERTS,
         "forecast_rain_class",
+        *C.FORECAST_GROUPED,
         "tide_height_m",
+        *C.DRAIN_RESPONSE,
     } == gated.RISING
+    # the storm so far may move the chance either way, as the prior rain may: PUB alerts as a storm starts
+    assert not {*C.STORM_HISTORY, *C.PRIOR_RAIN} & gated.RISING
+    # and so may the ground: nobody knows in which direction a canal nearby moves the chance
+    assert not set(C.MAP_FEATURES) & gated.RISING
+
+
+def test_a_pair_reads_the_ground_and_a_pair_saved_before_it_still_loads(fitted, tmp_path):
+    # the ground is one value per area, the same at every tick, read beside v5's features
+    grounded = dataclasses.replace(
+        FAST, drop=tuple(c for c in C.MODEL_FEATURES if c not in {*C.BASE_FEATURES, *C.MAP_FEATURES})
+    )
+    pair, _ = gated.fit(ROWS, ALERTS, SPLIT, settings=grounded)
+    assert set(C.MAP_FEATURES) <= set(pair.features)
+    pair.save(tmp_path / "ground")
+    rows = ROWS.head(2000)
+    pd.testing.assert_frame_equal(gated.GatedPair.load(tmp_path / "ground").predict(rows), pair.predict(rows))
+    # a pair fitted without the ground (v5's features, as v10 has its own) loads and scores as before
+    before, _ = fitted
+    assert not set(C.MAP_FEATURES) & set(before.inputs)
+    before.save(tmp_path / "before")
+    pd.testing.assert_frame_equal(gated.GatedPair.load(tmp_path / "before").predict(rows), before.predict(rows))
 
 
 def test_reasons_name_rain_further_away():
@@ -230,6 +377,28 @@ def test_reasons_name_rain_further_away():
         gated._phrase("rain_upwind_30min_mm", {"rain_upwind_30min_mm": np.nan}) is None
     )
     assert gated._phrase("air_temp_c", {"air_temp_c": 33.0}) is None
+    # PUB's own alerts nearby, in words; none, or unknown, says nothing
+    assert gated._phrase("pub_alerts_5km_30min", {"pub_alerts_5km_30min": 1.0}) == (
+        "a PUB alert within 5 km in the last 30 min"
+    )
+    assert gated._phrase("pub_alerts_10km_60min", {"pub_alerts_10km_60min": 3.0}) == (
+        "3 PUB alerts within 10 km in the last 60 min"
+    )
+    for value in (0.0, np.nan):
+        assert gated._phrase("pub_alerts_5km_60min", {"pub_alerts_5km_60min": value}) is None
+
+
+def test_reasons_say_when_the_storm_sets_a_new_high():
+    # the drains' rise in words, once even when both rises raised the score; below 1 mm/h, or outside a storm, nothing
+    row = {"drain_rise_10min_mmh": 12.4, "drain_rise_30min_mmh": 3.1, "rain_15min_mm": 18.0}
+    assert gated._phrase("drain_rise_10min_mmh", row) == "rain here is the heaviest it has been in this storm"
+    assert gated.reason_text(["drain_rise_10min_mmh", "drain_rise_30min_mmh", "rain_15min_mm"], row) == (
+        "rain here is the heaviest it has been in this storm; 18 mm of rain within 5 km in the last 15 min"
+    )
+    for value in (0.4, -6.0, np.nan):
+        assert gated._phrase("drain_rise_30min_mmh", {"drain_rise_30min_mmh": value}) is None
+    # the flows and overflows make no reason: the trees barely read them
+    assert gated._phrase("drain_flow_10min_mmh", {"drain_flow_10min_mmh": 80.0}) is None
 
 
 def test_save_and_load_predict_the_same(fitted, tmp_path):
@@ -441,3 +610,69 @@ def test_loading_a_pair_needs_no_scikit_learn():
         check=False,  # the assert below shows the child's traceback
     )
     assert loaded.returncode == 0, loaded.stderr
+
+
+def test_development_rows_pass_their_own_output_on_uncopied():
+    # a sweep fits many models on ten million rows: re-sorting them for every fit ran a serverless driver out of memory
+    dev = gated.development_rows(ROWS, SPLIT)
+    assert gated.development_rows(dev, SPLIT) is dev
+    shuffled = dev.sample(frac=1.0, random_state=0)
+    again = gated.development_rows(shuffled, SPLIT)
+    assert again is not shuffled and again[["area", "ts"]].equals(dev[["area", "ts"]])
+    # rows past the development period are left out, as before
+    assert gated.development_rows(ROWS, SPLIT)["ts"].max() < SPLIT.dev_end
+
+
+def test_the_rule_can_be_the_pairs_safety_override(fitted, tmp_path):
+    from dataclasses import replace
+
+    from daisi_team_master_corgis_floodsense.ml import ordinal
+    from daisi_team_master_corgis_floodsense.ml.baseline import RainfallRule
+
+    pair, report = fitted
+    dev = gated.development_rows(ROWS, SPLIT)
+    chosen, refit, table = ordinal.add_override(pair, report, dev, ALERTS, SPLIT, RainfallRule(15, 5.0), settings=FAST)
+    assert isinstance(chosen, gated.GatedPair)
+    # the pair as fitted is the first option, and whatever wins stays within the budget
+    assert table["override_mm"].isna().iloc[0] and table["medium_cut"].iloc[0] == pair.medium_p
+    board = score(refit.predictions(), ALERTS, start=SPLIT.start, end=SPLIT.dev_end).metrics(ci=False)
+    assert board["false_alarms_per_area_month"] <= FAST.max_false_alarms
+    # with an override set, every rated row whose rain passes it is warned, in the rule's words where only it warned
+    forced = replace(pair, override=(15, 5.0))
+    preds = forced.predict(ROWS)
+    heavy = ROWS["rain_15min_mm"] >= 5.0
+    assert (preds.loc[heavy, "tier"] != "Low").all()
+    only_rule = heavy & (preds["p_alert"] < pair.medium_p)
+    assert only_rule.any() and preds.loc[only_rule, "reason"].str.contains("in the last 15 min").all()
+    assert (preds.loc[~heavy, "tier"] == pair.predict(ROWS).loc[~heavy, "tier"]).all()
+    # it is saved with the pair, and a pair saved before 23 Oct loads without one
+    forced.save(tmp_path / "pair")
+    assert gated.GatedPair.load(tmp_path / "pair").override == (15, 5.0)
+    assert forced.logged_cut_offs()["pair_override_mm"] == 5.0
+    old = json.loads((tmp_path / "pair" / "pair.json").read_text())
+    del old["override"]
+    (tmp_path / "pair" / "pair.json").write_text(json.dumps(old))
+    assert gated.GatedPair.load(tmp_path / "pair").override is None
+
+
+def test_the_tiers_can_be_fixed_chances():
+    # 24 Oct: the live tiers are chances of a PUB alert within the hour, not cut-offs chosen by budget and precision
+    settings = dataclasses.replace(FAST, medium_chance=0.02, high_chance=0.1)
+    pair, report = gated.fit(ROWS, ALERTS, SPLIT, settings=settings)
+    assert (pair.medium_p, pair.high_p) == (0.02, 0.1)
+    assert (report.stats["medium_p"], report.stats["high_p"]) == (0.02, 0.1)
+    p = report.p_alert
+    assert ((report.tier == "High") == (p >= 0.1)).all()
+    assert ((report.tier != "Low") == (p >= 0.02)).all()
+    # the Medium curve is still traced, so the fixed tiers can be read against the budget's choice
+    assert len(report.curve) and {"medium_p", "flagged", "false_alarms"} <= set(report.curve.columns)
+    # a saved pair keeps them
+    assert pair.tiers(np.array([0.01, 0.05, 0.2])).tolist() == ["Low", "Medium", "High"]
+
+
+def test_fixed_chances_must_be_ordered_chances():
+    with pytest.raises(ValueError, match="above medium_chance"):
+        gated.Settings(medium_chance=0.05, high_chance=0.05)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        gated.Settings(medium_chance=1.5)
+    assert gated.Settings().medium_chance is None  # chosen by the budget, as sweeps compare fits

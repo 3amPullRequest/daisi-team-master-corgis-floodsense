@@ -16,6 +16,12 @@ resources:
       catalog_name: ${var.catalog}
       name: ml
       comment: "Placeholder: Registered models and scored probabilities"
+    app:
+      catalog_name: ${var.catalog}
+      name: app
+      comment: >-
+        Personal data from the FloodSense app: who asked for warnings by email or text, and for which areas. Only the
+        app's service principal and flood-live read it; nothing in the analytics schemas or Genie points here.
 
   volumes:
     landing:

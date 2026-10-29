@@ -14,6 +14,9 @@ class Settings:
     gold: str
     ml: str
     model: str  # registered model name in <catalog>.<ml>
+    dashboard: str  # the agencies' AI/BI scoreboard (resources/dashboard.yml); empty: none
+    genie_space: str  # the agencies' Genie space (resources/genie.yml); empty: none
+    app: str  # the app's own schema: warning subscriptions, which hold personal data (resources/uc.yml)
 
     def table(self, schema: str, name: str) -> str:
         return f"{self.catalog}.{getattr(self, schema)}.{name}"
@@ -34,4 +37,7 @@ def load() -> Settings:
         gold=env("FLOODSENSE_GOLD", f"{prefix}gold"),
         ml=env("FLOODSENSE_ML", f"{prefix}ml"),
         model=env("FLOODSENSE_MODEL", f"{prefix}floodsense"),
+        dashboard=env("FLOODSENSE_DASHBOARD", ""),
+        genie_space=env("FLOODSENSE_GENIE_SPACE", ""),
+        app=env("FLOODSENSE_APP", f"{prefix}app"),
     )

@@ -5,7 +5,8 @@
   the same name (the 90% warnings come from those sensors), a OneMap search (bronze.onemap_search). Its area is the
   forecast area whose label point is nearest, which is the same as falling in that point's Voronoi cell.
 - silver.alerts: every 90% warning and flash flood, from Telegram and the API, one row per location a post names,
-  with its place. An API flood that Telegram also posted is the same alert, marked as such.
+  with its place. An API flood that Telegram also posted is the same alert, marked as such. `read_by` says how the
+  text was read: by pattern, by hand, or by Jev for a post no pattern reads (silver.telegram_posts.method).
 - silver.area_alerts: the labels the models read, exactly ml/contract.py AREA_ALERTS_COLUMNS: placed alerts, each once.
 - silver.alerts_unplaced: alerts no method could place, to fix by hand.
 
@@ -20,9 +21,10 @@ The steps, in the order the code runs them (a step is built only when its source
    time wins.
 3. `location_gazetteer` places each location, taking the first method that works: a hand fix; PUB's circle (also given
    to the Telegram location that is the same alert); the water-level sensor best named like it, accepted only if it
-   scores at least SAME_NAME and no other sensor names it as well from more than SAME_PLACE_KM away; or the first
-   OneMap query whose top result is in Singapore and names the place. The area is then the nearest of the 47 label
-   points. The table also keeps the best sensor and OneMap candidates, and how far OneMap's answer lies from the chosen
+   scores at least SAME_NAME and no other sensor names it as well from more than SAME_PLACE_KM away; for a location
+   PUB has warned at, the best-named sensor from SENSOR_NEAR_NAME when OneMap's answer lies within SENSOR_NEAR_KM of it
+   (`sensor_near_onemap`, 23 Oct: so a reworded text stays at its sensor); or the first OneMap query whose top result
+   is in Singapore and names the place. The area is then the nearest of the 47 label points. The table also keeps the best sensor and OneMap candidates, and how far OneMap's answer lies from the chosen
    point, so a wrong placement can be spotted.
 4. `alerts` is every alert row with its place and area, an API flood that is a Telegram post's alert marked with that
    post's id (`same_as_message_id`).
@@ -60,6 +62,14 @@ ONEMAP = bool(landed(spark, "onemap_search"))
 
 # Two sensors this close are one place, so a tie between them leaves no doubt.
 SAME_PLACE_KM = 1.0
+# A warning's text that names a sensor too loosely to place it by name (SENSOR_NEAR_NAME to SAME_NAME) is still put at
+# that sensor when OneMap's answer lies within SENSOR_NEAR_KM of it: PUB's 90% warnings come from its sensors, and two
+# methods agreeing on the neighbourhood rule out a stray name match. It keeps a reworded text in its sensor's area (23
+# Oct 2026: CWS046's wording from Dec 2025 made OneMap put it 1 km south, in Geylang, not Hougang). Measured on the
+# gazetteer that day: about 95 locations move to their sensor's point, 15 of them to another area; a flash flood's
+# location, which names a road rather than a sensor, keeps OneMap's answer.
+SENSOR_NEAR_NAME = 0.5
+SENSOR_NEAR_KM = 1.0
 # An API flood is a Telegram post's alert when it is stamped within SAME_ALERT_S of it and names the place alike, from
 # SAME_ALERT_NAME: PUB writes the API's text apart from the post's ('Boon Lay Avenue' for 'Boon Lay Ave (Between Jalan
 # Boon Lay and Boon Lay Drive)'), and two floods can come minutes apart in one area (12 Dec 2025, Bedok).
@@ -107,6 +117,8 @@ def _sensor_matches(keys):
         F.col("score").alias("sensor_candidate_score"),
         F.when(accepted, F.col("s_lat")).alias("sensor_lat"),
         F.when(accepted, F.col("s_lon")).alias("sensor_lon"),
+        F.col("s_lat").alias("candidate_lat"),
+        F.col("s_lon").alias("candidate_lon"),
     )
 
 
@@ -176,6 +188,7 @@ if (TELEGRAM or API) and AREAS:
                 "link",
                 F.col("category").alias("kind"),
                 "posted_at",
+                "method",
                 F.explode("locations").alias("place"),
             )
             parts.append(
@@ -192,6 +205,7 @@ if (TELEGRAM or API) and AREAS:
                     .alias("timed_by"),
                     NULL_DOUBLE.alias("pub_lat"),
                     NULL_DOUBLE.alias("pub_lon"),
+                    F.col("method").alias("read_by"),
                 )
             )
         if API:
@@ -212,6 +226,8 @@ if (TELEGRAM or API) and AREAS:
                     .alias("timed_by"),
                     F.col("lat").alias("pub_lat"),
                     F.col("lon").alias("pub_lon"),
+                    # the API's descriptions are read by the same patterns
+                    F.lit("pattern").alias("read_by"),
                 )
             )
         rows = parts[0] if len(parts) == 1 else parts[0].unionByName(parts[1])
@@ -263,7 +279,8 @@ if (TELEGRAM or API) and AREAS:
         name=f"{SILVER}.location_gazetteer",
         comment="Every alert location (location_key: the normalised text) with its coordinates and forecast area. "
         "method is the first that placed it: 'manual' (data/static/location_gazetteer_manual.csv), 'pub_api' (PUB's "
-        "circle), 'pub_sensor' (the water-level sensor of the same name), 'onemap' (OneMap search). onemap_km is how "
+        "circle), 'pub_sensor' (the water-level sensor of the same name), 'sensor_near_onemap' (a warning's sensor named "
+        "loosely, where OneMap's answer is within 1 km of it), 'onemap' (OneMap search). onemap_km is how "
         "far OneMap's answer lies from the chosen point, a cross-check; area_km is the distance to the area's point.",
     )
     @dp.expect("placed", "area IS NOT NULL")
@@ -329,6 +346,8 @@ if (TELEGRAM or API) and AREAS:
                 NULL_DOUBLE.alias("sensor_candidate_score"),
                 NULL_DOUBLE.alias("sensor_lat"),
                 NULL_DOUBLE.alias("sensor_lon"),
+                NULL_DOUBLE.alias("candidate_lat"),
+                NULL_DOUBLE.alias("candidate_lon"),
             )
         if ONEMAP:
             located = located.join(_onemap_matches(), "location_key", "left")
@@ -341,10 +360,27 @@ if (TELEGRAM or API) and AREAS:
                 F.lit(None).cast("int").alias("onemap_query_rank"),
             )
 
+        near_sensor = (
+            (F.col("sensor_candidate_score") >= SENSOR_NEAR_NAME)
+            & F.array_contains("kinds", C.WARNING)
+            & (
+                distance_km(
+                    F.col("onemap_lat"),
+                    F.col("onemap_lon"),
+                    F.col("candidate_lat"),
+                    F.col("candidate_lon"),
+                )
+                <= SENSOR_NEAR_KM
+            )
+        )
+        located = located.withColumn(
+            "near_lat", F.when(near_sensor, F.col("candidate_lat"))
+        ).withColumn("near_lon", F.when(near_sensor, F.col("candidate_lon")))
         method = (
             F.when(F.col("manual_lat").isNotNull(), "manual")
             .when(F.col("pub_lat").isNotNull(), "pub_api")
             .when(F.col("sensor_lat").isNotNull(), "pub_sensor")
+            .when(F.col("near_lat").isNotNull(), "sensor_near_onemap")
             .when(F.col("onemap_lat").isNotNull(), "onemap")
         )
         matched = (
@@ -354,6 +390,7 @@ if (TELEGRAM or API) and AREAS:
             )
             .when(F.col("pub_lat").isNotNull(), F.lit("PUB flood-alerts API circle"))
             .when(F.col("sensor_lat").isNotNull(), F.col("sensor_candidate"))
+            .when(F.col("near_lat").isNotNull(), F.col("sensor_candidate"))
             .when(F.col("onemap_lat").isNotNull(), F.col("onemap_match"))
         )
         chosen = located.select(
@@ -364,10 +401,10 @@ if (TELEGRAM or API) and AREAS:
             "first_alert",
             "last_alert",
             method.alias("method"),
-            F.coalesce("manual_lat", "pub_lat", "sensor_lat", "onemap_lat").alias(
+            F.coalesce("manual_lat", "pub_lat", "sensor_lat", "near_lat", "onemap_lat").alias(
                 "lat"
             ),
-            F.coalesce("manual_lon", "pub_lon", "sensor_lon", "onemap_lon").alias(
+            F.coalesce("manual_lon", "pub_lon", "sensor_lon", "near_lon", "onemap_lon").alias(
                 "lon"
             ),
             matched.alias("matched"),
@@ -410,7 +447,8 @@ if (TELEGRAM or API) and AREAS:
         comment="Every PUB alert (90% warnings and flash floods, from Telegram and the flood-alerts API), one row per "
         "location a post names, with its place and forecast area (from silver.location_gazetteer). alert_ts is PUB's "
         "stamp, or the posting when a post has none (timed_by). same_as_message_id marks an API flood that is a "
-        "Telegram post's alert (same kind, stamped within 15 minutes, named alike).",
+        "Telegram post's alert (same kind, stamped within 15 minutes, named alike). read_by is 'pattern', 'manual', "
+        "or 'jev' where Jev read a post no pattern reads.",
     )
     def alerts():
         rows = spark.read.table("alert_locations")
@@ -450,13 +488,15 @@ if (TELEGRAM or API) and AREAS:
             "geocoded_by",
             "area_km",
             "same_as_message_id",
+            "read_by",
         )
 
     @dp.materialized_view(
         name=f"{SILVER}.area_alerts",
         comment="PUB alerts by NEA forecast area: the labels every FloodSense model and the scoreboard read "
         "(ml/contract.py AREA_ALERTS_COLUMNS). Placed alerts only, each once; an alert seen on Telegram and the API "
-        "keeps Telegram's stamp. Not alerts: flash flood subsided, and NEA heavy-rain posts.",
+        "keeps Telegram's stamp. Not alerts: flash flood subsided, and NEA heavy-rain posts. read_by = 'jev' marks "
+        "the labels Jev read from a post no pattern reads.",
         schema=AREA_ALERTS_SCHEMA,
         cluster_by=["alert_ts"],
     )
@@ -491,6 +531,7 @@ if (TELEGRAM or API) and AREAS:
                 "location",
                 "location_key",
                 "alert_ts",
+                "read_by",
                 "sensor_candidate",
                 "sensor_candidate_score",
                 "onemap_match",

@@ -2,13 +2,30 @@ import useSWR from "swr";
 
 export type Tier = "Low" | "Medium" | "High";
 
+/** The strongest warning in another area whose label point is within 5 km: shown beside the area's own tier. */
+export type Nearby = { area: string; tier: Tier; km: number; p_alert: number | null };
+
+/** The warning in force: from its first rating (`since`), its tier held until an hour after `issued`, the rating that
+ * holds it, whose chance and reason it carries (lib/warnings.ts has the rule). */
+export type Warning = {
+  tier: Exclude<Tier, "Low">;
+  since: string;
+  issued: string;
+  until: string;
+  p_alert: number | null;
+  reason: string | null;
+};
+
 export type AreaNow = {
   area: string;
   ts: string;
-  tier: Tier;
-  p_alert: number | null;
+  tier: Tier; // the warning in force, which the map shows
+  rated?: Tier; // the newest rating alone; absent in a /api/now cached before 26 Oct, when tier was the rating
+  warning?: Warning | null;
+  p_alert: number | null; // the newest rating's
   reason: string | null;
   rain_60min_mm: number | null;
+  nearby?: Nearby | null; // absent in a /api/now cached before 23 Oct
 };
 
 export type TidePoint = {
@@ -54,6 +71,40 @@ export type Replay = {
   areas_with_features: number;
 };
 
+/** Where the agencies' AI/BI scoreboard and Genie space are; null when the app has none configured. */
+export type Agencies = {
+  dashboard: { embed_url: string; url: string } | null;
+  genie: { url: string } | null;
+};
+
+export type AskStarted = { conversation_id: string; message_id: string };
+
+/** Genie's answer to one question: `done` once it has finished, whether or not it could answer. */
+export type Answer = {
+  status: string;
+  done: boolean;
+  text: string | null;
+  sql: string | null;
+  description: string | null;
+  columns: string[];
+  rows: (string | null)[][];
+  row_count: number | null;
+  suggested: string[];
+  error: string | null;
+};
+
+/** A sign-up for warnings by email or text, as the app shows it back: the address masked, how the welcome went. */
+export type Subscription = {
+  id: string;
+  channel: "email" | "sms";
+  address: string;
+  areas: string[];
+  places: string[];
+  created_at: string;
+  welcome: string | null; // "sent", or why not yet; null until flood-live's next run
+  welcomed_at: string | null;
+};
+
 export type AreaFeature = {
   type: "Feature";
   properties: { area: string; lat: number; lon: number };
@@ -69,6 +120,25 @@ export async function getJson<T>(url: string): Promise<T> {
     let detail = `${resp.status} ${resp.statusText}`;
     try {
       detail = (await resp.json()).detail ?? detail;
+    } catch {
+      // not JSON: keep the status line
+    }
+    throw new ApiError(detail);
+  }
+  return resp.json() as Promise<T>;
+}
+
+export async function postJson<T>(url: string, body: unknown, method = "POST"): Promise<T> {
+  const resp = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`;
+    try {
+      const d = (await resp.json()).detail;
+      detail = typeof d === "string" ? d : detail; // a 422 lists the fields instead
     } catch {
       // not JSON: keep the status line
     }

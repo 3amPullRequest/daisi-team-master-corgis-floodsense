@@ -1,6 +1,9 @@
 # The FloodSense app for residents: React (src/app/frontend, built into dist) served by FastAPI (src/app/backend). It
 # reads ml.predictions, the tide and freshness through the SQL warehouse, the model's track record from its MLflow
-# run, and runs the @champion model for storm replays. Build the frontend before deploying:
+# run, and runs the @champion model for storm replays. Its "For agencies" view embeds the AI/BI scoreboard
+# (dashboard.yml), and every view but that one's scoreboard can ask the Genie space (genie.yml), as the app's service
+# principal. The Now view writes sign-ups for warnings by email or text to the app schema (uc.yml), which flood-live
+# sends from. Build the frontend before deploying:
 #   (cd src/app/frontend && npm ci && npm run build) && databricks bundle deploy -t dev -p flood_dev
 #   databricks bundle run floodsense_app -t dev -p flood_dev   # starts it
 # The app's service principal needs read access to the tables and the model: see "The app" in DEVELOPER_NOTES.md.
@@ -27,6 +30,12 @@ resources:
             value: ${resources.schemas.ml.name}
           - name: FLOODSENSE_MODEL
             value: ${resources.registered_models.floodsense.name}
+          - name: FLOODSENSE_DASHBOARD
+            value: ${resources.dashboards.agency_dashboard.id}
+          - name: FLOODSENSE_GENIE_SPACE
+            value: ${resources.genie_spaces.agency_genie.id}
+          - name: FLOODSENSE_APP
+            value: ${resources.schemas.app.name}
       resources:
         - name: sql-warehouse
           sql_warehouse:
@@ -36,3 +45,8 @@ resources:
           experiment:
             experiment_id: ${resources.experiments.training.id}
             permission: CAN_READ
+        - name: genie-space
+          genie_space:
+            name: FloodSense for agencies
+            space_id: ${resources.genie_spaces.agency_genie.id}
+            permission: CAN_RUN

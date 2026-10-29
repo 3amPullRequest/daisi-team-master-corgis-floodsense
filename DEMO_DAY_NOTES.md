@@ -3,7 +3,7 @@
 ## Judging criteria
 
 | Criterion | Weight | What judges look for |
-|---|---|---|
+| --- | --- | --- |
 | Social impact | 30% | Who benefits, how much, and whether the solution could realistically be adopted. |
 | Technical execution on Databricks | 30% | A working end-to-end pipeline: ingestion, transformation, governance, analytics or AI. |
 | Solution & user experience | 20% | A usable dashboard, app or interface a non-technical stakeholder could act on. |

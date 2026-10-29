@@ -1,14 +1,16 @@
 """Gold weather: what NEA's weather stations and lightning detection had shown at each 5-minute tick.
 
-- gold.tick_weather: per tick, the island-wide weather (contract.py): the mean air temperature, humidity and wind over
-  the stations, each station's newest reading in the WEATHER_MINUTES ending READING_LAG_MINUTES before the tick that NEA
-  had published by the tick; how many stations each mean is over; and how many of NEA's 2-minute lightning records of
-  the last LIGHTNING_MINUTES exist, which says whether the lightning feed was up.
+- gold.tick_weather: per tick, the island-wide weather (contract.py): the mean air temperature, humidity, dew point and
+  wind over the stations, each station's newest reading in the WEATHER_MINUTES ending READING_LAG_MINUTES before the
+  tick that NEA had published by the tick; how many stations each mean is over; and how many of NEA's 2-minute
+  lightning records of the last LIGHTNING_MINUTES exist, which says whether the lightning feed was up.
 - gold.area_lightning: per area and tick, the strikes within each of LIGHTNING_RADII_KM of the area's forecast point in
   the last LIGHTNING_MINUTES, as NEA had published them by the tick. A row only where a strike was in reach.
 
 Wind is averaged as a vector (u eastward, v northward). NEA gives the direction the wind blows from, so the vector
-points the other way. Every mean is of exact decimals, so a rebuild gives the same values however Spark splits the work.
+points the other way. The dew point (Magnus formula, contract.MAGNUS_A) is computed per station from its own temperature
+and humidity, then averaged: relative humidity moves with the temperature, the dew point doesn't (23 Oct). Every mean is
+of exact decimals, so a rebuild gives the same values however Spark splits the work.
 
 How tick_weather is built (features.tick_weather, which flood-live's score task shares). As in gold.area_features'
 rain, each reading is expanded into the ticks whose window holds it (the first tick at or after READING_LAG_MINUTES
@@ -50,7 +52,8 @@ GRID_DEG = 0.01
 @dp.materialized_view(
     name="tick_weather",
     comment="The island-wide weather at each 5-minute tick, as a live fetch at the tick would have had it: the mean "
-    "air temperature (deg C), relative humidity (%) and wind (u eastward, v northward, knots) over NEA's weather "
+    "air temperature (deg C), relative humidity (%), dew point (deg C, per station before the mean) and wind (u "
+    "eastward, v northward, knots) over NEA's weather "
     f"stations, each station's newest reading in the {C.WEATHER_MINUTES} minutes ending "
     f"{C.READING_LAG_MINUTES} min before the tick that NEA had published by it; the stations each mean is over; and "
     f"lightning_records, how many of NEA's {C.LIGHTNING_RECORDS_PER_WINDOW} two-minute lightning records of the last "
@@ -61,6 +64,7 @@ GRID_DEG = 0.01
     {
         "temperature_plausible": "air_temp_c IS NULL OR air_temp_c BETWEEN 15 AND 40",
         "humidity_plausible": "rel_humidity_pct IS NULL OR rel_humidity_pct BETWEEN 0 AND 100",
+        "dew_point_plausible": "dew_point_c IS NULL OR dew_point_c BETWEEN 5 AND 35",
         "wind_plausible": "wind_u_kn IS NULL OR sqrt(wind_u_kn * wind_u_kn + wind_v_kn * wind_v_kn) <= 60",
         "records_in_window": f"lightning_records BETWEEN 0 AND {C.LIGHTNING_RECORDS_PER_WINDOW}",
     }

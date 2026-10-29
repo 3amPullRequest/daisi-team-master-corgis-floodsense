@@ -1,6 +1,9 @@
 # The live loop, every ${var.live_schedule}: fetch the newest pages, stream them through bronze and silver, score the
-# newest ticks for all 47 areas into ml.predictions (ml/live.py). A run that would overlap the previous one is skipped,
-# and the next one catches up: fetch reads the newest 25 records of each source, score every tick since its last.
+# newest ticks for all 47 areas into ml.predictions (ml/live.py), then post each new or changed warning to the Telegram
+# channel ${var.warning_channel} and send it to the app's subscribers by email or text (ml/broadcast.py; credentials in
+# the secret scope). A new Telegram post no pattern reads is read by Jev instead, and emailed to ${var.parser_alert_to}
+# (ingest/fallback.py). A run that would overlap the previous one is skipped, and the next one catches up: fetch reads
+# the newest 25 records of each source, score every tick since its last.
 # flood-watchdog (watchdog.job.yml) emails when any of this goes stale.
 resources:
   jobs:
@@ -26,6 +29,8 @@ resources:
               - ${var.secret_scope}
               - --runner
               - databricks-job
+              - --alert-to   # who hears about a Telegram post no pattern reads (ingest/fallback.py)
+              - ${var.parser_alert_to}
         - task_key: refresh_pipeline
           depends_on:
             - task_key: fetch
@@ -56,6 +61,12 @@ resources:
               - ${resources.registered_models.floodsense.name}
               - --experiment
               - ${resources.experiments.training.name}
+              - --secret-scope   # telegram-bot-token, the SMTP account, and Twilio for texts (ml/broadcast.py)
+              - ${var.secret_scope}
+              - --warning-channel
+              - ${var.warning_channel}
+              - --app-schema
+              - ${resources.schemas.app.name}
       environments:
         - environment_key: default
           spec:

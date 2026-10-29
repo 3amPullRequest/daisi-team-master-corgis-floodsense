@@ -11,7 +11,8 @@ leaves the rest to bronze and silver.
   also saves the PNG frames newer than the cursor in `_state/radar_70km.json`.
 - Telegram. The newest page of the channel, of which only posts above the cursor in `_state/telegram.json` are landed,
   so posts PUB later deletes are kept. A gap longer than one page is not caught up here; re-running the archive
-  backfill does that.
+  backfill does that. A new post no pattern reads goes to the fallback (ingest/fallback.py): Jev is asked about it
+  once, its answers are landed in `telegram_jev_parses`, and the --alert-to addresses get an email with the post.
 - Tides. NEA's tide table, at most once per SGT day (cursor `_state/nea_tides.json`).
 - One source failing doesn't stop the rest. Each runs under `_guard`, which records the error instead of raising. The
   tick ends with a heartbeat line, one result per source (ok, HTTP status, record count, path, latency), landed in
@@ -40,6 +41,9 @@ from datetime import time as clock_time
 from . import sources as S
 from .cli import add_common_args, parse_duration, setup
 from .client import ApiResponse, Http, realtime
+from .fallback import Fallback
+from .fallback import add_args as add_fallback_args
+from .fallback import from_args as fallback_from_args
 from .history import api_days, archive_radar_frames
 from .scrapers import parse_nea_tides, parse_telegram_page
 from .sinks import Sink, read_json, write_json
@@ -70,6 +74,7 @@ def run_tick(
     runner: str,
     names: set[str] | None = None,
     now: datetime | None = None,
+    fallback: Fallback | None = None,
 ) -> dict:
     started = now or S.utcnow()
     results = []
@@ -83,7 +88,10 @@ def run_tick(
             )
     if names is None or S.TELEGRAM in names:
         results.append(
-            _guard(S.TELEGRAM, lambda: _land_telegram(http, sink, started, runner))
+            _guard(
+                S.TELEGRAM,
+                lambda: _land_telegram(http, sink, started, runner, fallback),
+            )
         )
     if names is None or S.TIDES in names:
         results.append(
@@ -159,8 +167,15 @@ def _land_api(
     return result
 
 
-def _land_telegram(http: Http, sink: Sink, started: datetime, runner: str) -> dict:
-    """Posts newer than the last one landed. Capturing them live also keeps posts PUB later deletes."""
+def _land_telegram(
+    http: Http,
+    sink: Sink,
+    started: datetime,
+    runner: str,
+    fallback: Fallback | None = None,
+) -> dict:
+    """Posts newer than the last one landed. Capturing them live also keeps posts PUB later deletes. The new posts
+    then go past the fallback, which also retries the alert emails still pending."""
     posts = parse_telegram_page(http.get(S.TELEGRAM_URL).text)
     cursor = S.state_path("telegram")
     last_id = read_json(sink, cursor).get("last_message_id", 0)
@@ -181,6 +196,16 @@ def _land_telegram(http: Http, sink: Sink, started: datetime, runner: str) -> di
         sink.write_bytes(path, S.jsonl(lines))
         write_json(sink, cursor, {"last_message_id": max(p["message_id"] for p in new)})
         result["path"] = path
+    if fallback is not None:
+        try:
+            result["fallback"] = fallback.handle(
+                sink, new, started=started, runner=runner
+            )
+        except (
+            Exception
+        ) as exc:  # the posts are landed; silver.telegram_review still lists them
+            log.exception("Telegram fallback failed")
+            result["fallback"] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
     return result
 
 
@@ -256,12 +281,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="JOB_ID",
         help="Databricks job to run-now after each tick",
     )
+    add_fallback_args(parser)
     args = parser.parse_args(argv)
     http, sink = setup(args, share=0.8)
     names = set(args.sources) if args.sources else None
+    fallback = fallback_from_args(args, sink)
 
     def tick() -> bool:
-        heartbeat = run_tick(http, sink, runner=args.runner, names=names)
+        heartbeat = run_tick(
+            http, sink, runner=args.runner, names=names, fallback=fallback
+        )
         if args.daily_repair:
             try:
                 daily_repair(http, sink, runner=args.runner)

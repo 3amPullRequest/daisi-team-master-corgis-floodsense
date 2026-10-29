@@ -17,7 +17,10 @@ AREA_ALERTS_TYPES = {
     "kind": "STRING",
     "posted_ts": "TIMESTAMP",
     "location": "STRING",
+    "lat": "DOUBLE",
+    "lon": "DOUBLE",
     "source": "STRING",
+    "read_by": "STRING",
 }
 
 
@@ -38,18 +41,24 @@ AREA_FEATURES_TYPES = {
     "area": "STRING",
     "ts": "TIMESTAMP",
     **{C.rain_column(w): "DOUBLE" for w in C.RAIN_WINDOWS_MINUTES},
+    **{c: "DOUBLE" for c in C.PRIOR_RAIN},
+    **{c: "DOUBLE" for c in (*C.STORM_HISTORY, *C.DRAIN_RESPONSE)},
     "rain_gauges": "INT",
     "forecast_rain_class": "INT",
+    **{c: "INT" for c in C.FORECAST_GROUPED},
     "forecast_age_min": "DOUBLE",
     "rain_nearby_30min_mm": "DOUBLE",
     "rain_upwind_30min_mm": "DOUBLE",
+    **{c: "INT" for c in C.PUB_ALERTS},
     "air_temp_c": "DOUBLE",
     "rel_humidity_pct": "DOUBLE",
+    "dew_point_c": "DOUBLE",
     "wind_u_kn": "DOUBLE",
     "wind_v_kn": "DOUBLE",
     **{C.lightning_column(km): "INT" for km in C.LIGHTNING_RADII_KM},
     "tide_height_m": "DOUBLE",
     "minutes_to_high_tide": "DOUBLE",
+    **{c: "DOUBLE" for c in C.MAP_FEATURES},
 }
 AREA_FEATURES_SCHEMA = ddl(C.AREA_FEATURES_COLUMNS, AREA_FEATURES_TYPES)
 

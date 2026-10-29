@@ -6,8 +6,8 @@
   neighbours is 'missing': the lost posts could have gone out at any moment of it. After the newest post, the channel
   is recorded up to the last time its newest page was read.
 - gold.label_ticks: one row per tick. Its label window is missing if any post that could carry an alert for it
-  (contract.py: posted from STAMP_AHEAD before the tick to HORIZON + POST_DELAY_MAX after) falls in a missing interval,
-  or if an alert for it isn't placed in an area yet; and its split.
+  (contract.py: posted from STAMP_AHEAD before the tick to HORIZON + POST_DELAY_MAX after) falls in a missing interval
+  or can't be read, or if an alert for it isn't placed in an area yet; and its split.
 - gold.area_labels: per area and tick, whether a PUB alert came within the hour ('alert'), none came and the window was
   recorded ('no_alert'), or none was recorded but the window wasn't ('missing'), as scoreboard.tick_labels counts them.
 
@@ -15,10 +15,12 @@ How they are built. `label_coverage` orders the recovered posts by id and looks 
 n+1 prove that nothing was posted between them, so that span of time is recorded, and any id gap makes it missing. A
 last interval runs from the newest post to the last moment the channel's newest page was read, taken from the archive
 scrapes and from the successful live ticks in bronze.ingest_heartbeat. `label_ticks` lays the 5-minute grid from
-LABELS_START to the last midnight whose windows the channel was watched past, and marks a tick missing for two reasons.
-A missing interval hides the tick if a post inside it could carry the tick's alert, which is any post from STAMP_AHEAD
-before the tick to HORIZON + POST_DELAY_MAX after it. And an alert that no method placed in an area (silver.
-alerts_unplaced) hides the ticks whose hour it falls in, since it could belong to any area. Each tick also gets its
+LABELS_START to the last midnight whose windows the channel was watched past, and marks a tick missing for three
+reasons. A missing interval hides the tick if a post inside it could carry the tick's alert, which is any post from
+STAMP_AHEAD before the tick to HORIZON + POST_DELAY_MAX after it. A post nothing could read hides the same ticks, as if
+it were lost: no pattern or hand label reads it and Jev failed on it (silver.telegram_posts: category 'unmatched', or
+an alert whose location couldn't be read), so it may hold any area's alert. And an alert that no method placed in an
+area (silver.alerts_unplaced) hides the ticks whose hour it falls in, since it could belong to any area. Each tick also gets its
 split from the contract's dates: train, a day of embargo, test, and after_split for ticks the models never see.
 `area_labels` crosses the ticks with the 47 areas and joins the area's alerts: an alert at time a labels every tick t
 with t < a <= t + HORIZON. `alert_label` is 1 if one does, else 0 where the window is recorded, else null, and
@@ -169,6 +171,22 @@ def label_ticks():
         .distinct()
         .withColumn("posts_missing", F.lit(True))
     )
+    # a post nothing reads (Jev failing included) may hold an alert: it hides the ticks a post then could carry
+    unread = (
+        spark.read.table(silver(spark, "telegram_posts"))
+        .where(
+            "posted_at IS NOT NULL AND (category = 'unmatched' OR "
+            f"(category IN {tuple(C.ALERT_KINDS)} AND problem = 'no location'))"
+        )
+        .select(
+            ticks_between(
+                tick_after(seconds("posted_at") - REACH_S),
+                tick_before(seconds("posted_at") + AHEAD_S),
+            ).alias("tick_s")
+        )
+        .distinct()
+        .withColumn("unread", F.lit(True))
+    )
     # an alert not placed in an area could be any area's: it hides the windows of the hour of ticks before it
     unplaced = (
         spark.read.table(silver(spark, "alerts_unplaced"))
@@ -182,9 +200,15 @@ def label_ticks():
         .distinct()
         .withColumn("unplaced", F.lit(True))
     )
-    rows = grid.join(gaps, "tick_s", "left").join(unplaced, "tick_s", "left")
-    reason = F.when(F.col("posts_missing"), C.POSTS_NOT_RECOVERED).when(
-        F.col("unplaced"), C.UNPLACED_ALERT
+    rows = (
+        grid.join(gaps, "tick_s", "left")
+        .join(unread, "tick_s", "left")
+        .join(unplaced, "tick_s", "left")
+    )
+    reason = (
+        F.when(F.col("posts_missing"), C.POSTS_NOT_RECOVERED)
+        .when(F.col("unread"), C.UNREAD_POST)
+        .when(F.col("unplaced"), C.UNPLACED_ALERT)
     )
     return rows.select(
         F.timestamp_seconds("tick_s").alias("ts"),

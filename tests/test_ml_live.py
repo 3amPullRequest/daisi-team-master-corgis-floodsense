@@ -60,6 +60,13 @@ def test_the_rule_comes_back_from_its_logged_name(rule):
         live.rule_from_name("gated_lightgbm M>=0.1 H>=inf")
 
 
+def test_a_version_goes_by_the_alias_it_was_named_by_else_by_its_number():
+    assert C.version_name("floodsense", "13", ["champion", "final_1", "challenger"]) == "final_1"
+    assert C.version_name("floodsense", "12", ["challenger", "champion"]) == "floodsense v12"
+    assert C.version_name("floodsense", 12) == "floodsense v12"
+    assert C.version_name("floodsense", 12, None) == "floodsense v12"
+
+
 def test_scorer_rows_are_float64_with_every_model_feature():
     frame = pd.DataFrame(
         {

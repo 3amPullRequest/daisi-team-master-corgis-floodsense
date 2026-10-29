@@ -24,6 +24,12 @@ variables:
     description: SQL warehouse the app queries
     lookup:
       warehouse: Serverless Starter Warehouse
+  parser_alert_to:
+    description: Comma-separated addresses emailed when a new PUB Telegram post matches no pattern (sent by SMTP as the account in the secret scope's parser-alert-smtp-user / parser-alert-smtp-password)
+    default: stkinzheng@gmail.com,frostlynx6@gmail.com,eugenehengruizhe@gmail.com,stevenharrington803@gmail.com
+  warning_channel:
+    description: Public Telegram channel flood-live posts warnings to, as the bot whose token is the secret scope's telegram-bot-token (an administrator of the channel)
+    default: "@daisi_floodsense"
   live_schedule:
     description: Quartz cron for flood-live; every 5 min (use 0/15 outside demo windows to save Free Edition quota)
     default: "0 0/5 * * * ?"

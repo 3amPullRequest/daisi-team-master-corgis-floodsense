@@ -1,0 +1,14 @@
+ad_hoc/*
+demo_day_materials/*
+dist/*
+presentation/*
+ARCHITECTURE.md
+DEMO_DAY_NOTES.md
+DEVELOPER_NOTES.md
+GUIDE.md
+meeting_notes.md
+
+
+node_modules/
+.venv/
+dist/

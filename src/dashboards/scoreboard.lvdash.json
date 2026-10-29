@@ -1,0 +1,2280 @@
+{
+  "datasets": [
+    {
+      "name": "ds_summary",
+      "displayName": "Scoreboard",
+      "queryLines": [
+        "SELECT CASE period WHEN 'after_training' THEN 'After training' ELSE 'Development, out of fold' END AS period_name, CASE WHEN model = 'Rainfall rule' THEN 'Rainfall rule' ELSE concat('FloodSense, ', lower(warning_level)) END AS warning_by, model_version, period_start, period_end,\n",
+        "       pub_alert_events, pub_alert_days,\n",
+        "       alerts_warned_before_pub, alerts_warned_before_pub_lo, alerts_warned_before_pub_hi,\n",
+        "       alert_mean_lead_min, alert_mean_lead_min_lo, alert_mean_lead_min_hi,\n",
+        "       flash_floods, floods_warned_before_pub, floods_warned_before_pub_lo, floods_warned_before_pub_hi,\n",
+        "       flood_mean_lead_min, pub_flood_warning_min,\n",
+        "       public_flood_warning_min, public_flood_warning_min_lo, public_flood_warning_min_hi,\n",
+        "       warnings, warnings_followed_by_alert, false_alarms_per_area_month, warned_hours_per_area_month\n",
+        "FROM scoreboard\n",
+        "ORDER BY period, model, warning_level DESC\n"
+      ]
+    },
+    {
+      "name": "ds_kpi",
+      "displayName": "FloodSense after training",
+      "queryLines": [
+        "SELECT alerts_warned_before_pub, alert_mean_lead_min, floods_warned_before_pub, flash_floods,\n",
+        "       false_alarms_per_area_month, pub_alert_events, pub_flood_warning_min, public_flood_warning_min\n",
+        "FROM scoreboard\n",
+        "WHERE period = 'after_training' AND model = 'FloodSense' AND warning_level = 'Moderate or above'\n"
+      ]
+    },
+    {
+      "name": "ds_floods",
+      "displayName": "Flash floods",
+      "queryLines": [
+        "SELECT CASE period WHEN 'after_training' THEN 'After training' ELSE 'Development, out of fold' END AS period_name,\n",
+        "       concat(date_format(flood_time, 'yyyy-MM-dd HH:mm'), '  ', area) AS flood_label,\n",
+        "       flood_time, area,\n",
+        "       CASE WHEN judged THEN 'Yes' ELSE 'No: posts lost or inputs missing' END AS counted,\n",
+        "       pub_first_alert, pub_warning_min, floodsense_warned_from, floodsense_lead_min,\n",
+        "       CASE WHEN floodsense_before_pub THEN 'Before PUB' WHEN floodsense_lead_min IS NOT NULL THEN 'After PUB'\n",
+        "            ELSE 'No warning' END AS floodsense_warned,\n",
+        "       public_warning_min, floodsense_tier_at_flood, floodsense_chance_at_flood,\n",
+        "       floodsense_peak_tier, floodsense_peak_chance, scored_by, rule_lead_min,\n",
+        "       CASE WHEN rule_before_pub THEN 'Before PUB' WHEN rule_lead_min IS NOT NULL THEN 'After PUB'\n",
+        "            ELSE 'No warning' END AS rule_warned\n",
+        "FROM scoreboard_floods\n",
+        "ORDER BY flood_time DESC\n"
+      ]
+    },
+    {
+      "name": "ds_area",
+      "displayName": "Warnings by area",
+      "queryLines": [
+        "WITH w AS (\n",
+        "  SELECT model, warning_level, area, count(*) AS warnings, count_if(followed_by_pub_alert) AS came_true,\n",
+        "         count_if(false_alarm) AS false_alarms, sum(hours_in_force) AS hours_warned\n",
+        "  FROM scoreboard_warnings\n",
+        "  WHERE period = 'after_training' AND judged\n",
+        "  GROUP BY ALL),\n",
+        "e AS (\n",
+        "  SELECT model, warning_level, area, count(*) AS pub_alert_events, count_if(warned_before_pub) AS warned_first,\n",
+        "         avg(coalesce(lead_min, 0)) AS mean_lead_min\n",
+        "  FROM scoreboard_events\n",
+        "  WHERE period = 'after_training' AND judged AND event_kind = 'pub_alert'\n",
+        "  GROUP BY ALL)\n",
+        "SELECT CASE WHEN model = 'Rainfall rule' THEN 'Rainfall rule' ELSE concat('FloodSense, ', lower(warning_level)) END AS warning_by, area,\n",
+        "       coalesce(warnings, 0) AS warnings, coalesce(came_true, 0) AS came_true,\n",
+        "       coalesce(false_alarms, 0) AS false_alarms, round(coalesce(hours_warned, 0), 1) AS hours_warned,\n",
+        "       coalesce(pub_alert_events, 0) AS pub_alert_events, coalesce(warned_first, 0) AS warned_first,\n",
+        "       coalesce(pub_alert_events, 0) - coalesce(warned_first, 0) AS not_warned_first,\n",
+        "       round(mean_lead_min, 1) AS mean_lead_min\n",
+        "FROM w FULL OUTER JOIN e USING (model, warning_level, area)\n",
+        "ORDER BY false_alarms DESC, warnings DESC\n"
+      ]
+    },
+    {
+      "name": "ds_alerts",
+      "displayName": "PUB alerts",
+      "queryLines": [
+        "SELECT alert_time, CAST(year(alert_time) AS STRING) AS year, area, alert_type, location, lat, lon,\n",
+        "       CASE WHEN kind = 'flash_flood' THEN 1 ELSE 0 END AS is_flood\n",
+        "FROM pub_alerts\n"
+      ]
+    },
+    {
+      "name": "ds_prone",
+      "displayName": "Flood-prone land",
+      "queryLines": [
+        "SELECT CAST(year AS STRING) AS year, hectares, change_ha, change_pct\n",
+        "FROM flood_prone_trend\n",
+        "ORDER BY year\n"
+      ]
+    },
+    {
+      "name": "ds_prone_kpi",
+      "displayName": "Flood-prone land, latest",
+      "queryLines": [
+        "SELECT max_by(hectares, year) AS hectares_latest, max(year) AS latest_year,\n",
+        "       round(max_by(hectares, year) - min_by(hectares, year), 1) AS change_ha, min(year) AS first_year\n",
+        "FROM flood_prone_trend\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "scoreboard",
+      "displayName": "Scoreboard",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# FloodSense scoreboard\n",
+                "\n",
+                "How often FloodSense warned before PUB's first flood alert, how early, and how often its warnings came to nothing. FloodSense is an earlier heads-up on top of PUB's alerts, not a replacement for them."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "after_training_heading",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### After training\n",
+                "\n",
+                "Storms from 20 Dec 2025 on, which the live FloodSense model never trained on. Here a warning is FloodSense at Moderate or above."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_warned_first",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "alerts_warned_before_pub",
+                      "expression": "`alerts_warned_before_pub`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "alerts_warned_before_pub",
+                  "displayName": "Warned before PUB",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warned before PUB",
+                "showDescription": true,
+                "description": "Share of PUB alert events with a FloodSense warning out before PUB's first alert"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_lead",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "alert_mean_lead_min",
+                      "expression": "`alert_mean_lead_min`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "alert_mean_lead_min",
+                  "displayName": "Ahead of PUB, on average",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  },
+                  "formatTemplate": "{{ @formatted }} min"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Ahead of PUB, on average",
+                "showDescription": true,
+                "description": "Minutes, over every PUB alert event; an event FloodSense missed counts as 0"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_floods",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "floods_warned_before_pub",
+                      "expression": "`floods_warned_before_pub`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "floods_warned_before_pub",
+                  "displayName": "Flash floods warned before PUB",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flash floods warned before PUB",
+                "showDescription": true,
+                "description": "Share of the flash floods that could be judged; see Every flash flood"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_false_alarms",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "false_alarms_per_area_month",
+                      "expression": "`false_alarms_per_area_month`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "false_alarms_per_area_month",
+                  "displayName": "False alarms per area per month",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "False alarms per area per month",
+                "showDescription": true,
+                "description": "Warnings with no PUB alert while they were in force"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "warned_first_chart",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_summary",
+                  "fields": [
+                    {
+                      "name": "warning_by",
+                      "expression": "`warning_by`"
+                    },
+                    {
+                      "name": "alerts_warned_before_pub",
+                      "expression": "`alerts_warned_before_pub`"
+                    },
+                    {
+                      "name": "period_name",
+                      "expression": "`period_name`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "warning_by",
+                  "displayName": "Warning",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "custom-order",
+                      "orderedValues": [
+                        "FloodSense, moderate or above",
+                        "FloodSense, elevated",
+                        "Rainfall rule"
+                      ]
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "alerts_warned_before_pub",
+                  "displayName": "Warned before PUB",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "period_name",
+                  "displayName": "Period",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "After training",
+                        "color": "#2C6E7C"
+                      },
+                      {
+                        "value": "Development, out of fold",
+                        "color": "#9CC3C8"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warned before PUB's first alert",
+                "showDescription": true,
+                "description": "Share of PUB alert events, after training and out of fold before it"
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "false_alarm_chart",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_summary",
+                  "fields": [
+                    {
+                      "name": "warning_by",
+                      "expression": "`warning_by`"
+                    },
+                    {
+                      "name": "false_alarms_per_area_month",
+                      "expression": "`false_alarms_per_area_month`"
+                    },
+                    {
+                      "name": "period_name",
+                      "expression": "`period_name`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "warning_by",
+                  "displayName": "Warning",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "custom-order",
+                      "orderedValues": [
+                        "FloodSense, moderate or above",
+                        "FloodSense, elevated",
+                        "Rainfall rule"
+                      ]
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "false_alarms_per_area_month",
+                  "displayName": "False alarms per area per month",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "period_name",
+                  "displayName": "Period",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "After training",
+                        "color": "#2C6E7C"
+                      },
+                      {
+                        "value": "Development, out of fold",
+                        "color": "#9CC3C8"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "False alarms per area per month",
+                "showDescription": true,
+                "description": "Warnings with no PUB alert while they were in force"
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 7,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "measures_table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_summary",
+                  "fields": [
+                    {
+                      "name": "period_name",
+                      "expression": "`period_name`"
+                    },
+                    {
+                      "name": "warning_by",
+                      "expression": "`warning_by`"
+                    },
+                    {
+                      "name": "model_version",
+                      "expression": "`model_version`"
+                    },
+                    {
+                      "name": "period_start",
+                      "expression": "`period_start`"
+                    },
+                    {
+                      "name": "period_end",
+                      "expression": "`period_end`"
+                    },
+                    {
+                      "name": "pub_alert_events",
+                      "expression": "`pub_alert_events`"
+                    },
+                    {
+                      "name": "alerts_warned_before_pub",
+                      "expression": "`alerts_warned_before_pub`"
+                    },
+                    {
+                      "name": "alerts_warned_before_pub_lo",
+                      "expression": "`alerts_warned_before_pub_lo`"
+                    },
+                    {
+                      "name": "alerts_warned_before_pub_hi",
+                      "expression": "`alerts_warned_before_pub_hi`"
+                    },
+                    {
+                      "name": "alert_mean_lead_min",
+                      "expression": "`alert_mean_lead_min`"
+                    },
+                    {
+                      "name": "flash_floods",
+                      "expression": "`flash_floods`"
+                    },
+                    {
+                      "name": "floods_warned_before_pub",
+                      "expression": "`floods_warned_before_pub`"
+                    },
+                    {
+                      "name": "pub_flood_warning_min",
+                      "expression": "`pub_flood_warning_min`"
+                    },
+                    {
+                      "name": "public_flood_warning_min",
+                      "expression": "`public_flood_warning_min`"
+                    },
+                    {
+                      "name": "warnings",
+                      "expression": "`warnings`"
+                    },
+                    {
+                      "name": "warnings_followed_by_alert",
+                      "expression": "`warnings_followed_by_alert`"
+                    },
+                    {
+                      "name": "false_alarms_per_area_month",
+                      "expression": "`false_alarms_per_area_month`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "period_name",
+                    "displayName": "Period"
+                  },
+                  {
+                    "fieldName": "warning_by",
+                    "displayName": "Warning"
+                  },
+                  {
+                    "fieldName": "model_version",
+                    "displayName": "Version"
+                  },
+                  {
+                    "fieldName": "period_start",
+                    "displayName": "From"
+                  },
+                  {
+                    "fieldName": "period_end",
+                    "displayName": "To"
+                  },
+                  {
+                    "fieldName": "pub_alert_events",
+                    "displayName": "PUB alert events",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "alerts_warned_before_pub",
+                    "displayName": "Warned before PUB",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "alerts_warned_before_pub_lo",
+                    "displayName": "95% low",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "alerts_warned_before_pub_hi",
+                    "displayName": "95% high",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "alert_mean_lead_min",
+                    "displayName": "Mean lead (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "flash_floods",
+                    "displayName": "Flash floods",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "floods_warned_before_pub",
+                    "displayName": "Floods warned before PUB",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "pub_flood_warning_min",
+                    "displayName": "PUB's warning before a flood (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "public_flood_warning_min",
+                    "displayName": "Public's warning with FloodSense (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "warnings",
+                    "displayName": "Warnings",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "warnings_followed_by_alert",
+                    "displayName": "Followed by a PUB alert",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "false_alarms_per_area_month",
+                    "displayName": "False alarms per area per month",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Every measure, with 95% intervals",
+                "showDescription": true,
+                "description": "Intervals are Wilson for shares and a bootstrap over storm days for minutes"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "how_to_read",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### How to read this\n",
+                "\n",
+                "**Event**: PUB alerts in one area at most an hour apart, roughly one storm. ",
+                "**Warning**: every 5-minute rating at the warning level warns for the next hour, so a warning runs from its first rating until an hour after its last. ",
+                "**Lead**: minutes from that first rating to PUB's first alert of the event (or to the flash flood). ",
+                "**False alarm**: a warning with no PUB alert while it was in force. ",
+                "**Out of fold**: before 20 Dec 2025, each storm was scored by a version of FloodSense trained without it. ",
+                "**Judged**: events and warnings where PUB's posts or the model's inputs are missing are left out. ",
+                "**Round 1 targets**: more than 80% of flash floods warned before PUB, 30 minutes of warning on average, and better than the rainfall rule on both lead time and false alarms."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 20,
+            "width": 12,
+            "height": 4
+          }
+        }
+      ]
+    },
+    {
+      "name": "floods",
+      "displayName": "Every flash flood",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "floods_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Every flash flood\n",
+                "\n",
+                "PUB's own warning (its first alert of the storm, to the flood) beside FloodSense's lead and the rainfall rule's. No bar means no warning was in force. Floods before 20 Dec 2025 were scored out of fold."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "floods_period_filter",
+            "queries": [
+              {
+                "name": "floods_period_filter_query",
+                "query": {
+                  "datasetName": "ds_floods",
+                  "fields": [
+                    {
+                      "name": "period_name",
+                      "expression": "`period_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "period_name",
+                    "displayName": "Period",
+                    "queryName": "floods_period_filter_query"
+                  }
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "After training"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Period"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "floods_count",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_floods",
+                  "fields": [
+                    {
+                      "name": "count(flood_time)",
+                      "expression": "COUNT(`flood_time`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "count(flood_time)",
+                  "displayName": "Flash floods",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flash floods",
+                "showDescription": true,
+                "description": "Reported by PUB in the period"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pub_warning_avg",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_floods",
+                  "fields": [
+                    {
+                      "name": "avg(pub_warning_min)",
+                      "expression": "AVG(`pub_warning_min`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "avg(pub_warning_min)",
+                  "displayName": "PUB's warning before a flood",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  },
+                  "formatTemplate": "{{ @formatted }} min"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "PUB's warning before a flood",
+                "showDescription": true,
+                "description": "Average minutes from PUB's first alert of the storm to the flood"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "flood_minutes",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_floods",
+                  "fields": [
+                    {
+                      "name": "flood_label",
+                      "expression": "`flood_label`"
+                    },
+                    {
+                      "name": "pub_warning_min",
+                      "expression": "`pub_warning_min`"
+                    },
+                    {
+                      "name": "floodsense_lead_min",
+                      "expression": "`floodsense_lead_min`"
+                    },
+                    {
+                      "name": "rule_lead_min",
+                      "expression": "`rule_lead_min`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "pub_warning_min",
+                      "displayName": "PUB's warning"
+                    },
+                    {
+                      "fieldName": "floodsense_lead_min",
+                      "displayName": "FloodSense's lead"
+                    },
+                    {
+                      "fieldName": "rule_lead_min",
+                      "displayName": "Rainfall rule's lead"
+                    }
+                  ]
+                },
+                "y": {
+                  "fieldName": "flood_label",
+                  "displayName": "Flash flood",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "alphabetical"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Minutes of warning before each flash flood",
+                "showDescription": true,
+                "description": "PUB's first alert, FloodSense's warning and the rule's"
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 12,
+            "height": 9
+          }
+        },
+        {
+          "widget": {
+            "name": "floods_table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_floods",
+                  "fields": [
+                    {
+                      "name": "flood_time",
+                      "expression": "`flood_time`"
+                    },
+                    {
+                      "name": "area",
+                      "expression": "`area`"
+                    },
+                    {
+                      "name": "counted",
+                      "expression": "`counted`"
+                    },
+                    {
+                      "name": "pub_warning_min",
+                      "expression": "`pub_warning_min`"
+                    },
+                    {
+                      "name": "floodsense_warned",
+                      "expression": "`floodsense_warned`"
+                    },
+                    {
+                      "name": "floodsense_lead_min",
+                      "expression": "`floodsense_lead_min`"
+                    },
+                    {
+                      "name": "public_warning_min",
+                      "expression": "`public_warning_min`"
+                    },
+                    {
+                      "name": "floodsense_peak_tier",
+                      "expression": "`floodsense_peak_tier`"
+                    },
+                    {
+                      "name": "floodsense_peak_chance",
+                      "expression": "`floodsense_peak_chance`"
+                    },
+                    {
+                      "name": "rule_warned",
+                      "expression": "`rule_warned`"
+                    },
+                    {
+                      "name": "rule_lead_min",
+                      "expression": "`rule_lead_min`"
+                    },
+                    {
+                      "name": "scored_by",
+                      "expression": "`scored_by`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "flood_time",
+                    "displayName": "Flash flood (SGT)"
+                  },
+                  {
+                    "fieldName": "area",
+                    "displayName": "Area"
+                  },
+                  {
+                    "fieldName": "counted",
+                    "displayName": "Counted"
+                  },
+                  {
+                    "fieldName": "pub_warning_min",
+                    "displayName": "PUB's warning (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "floodsense_warned",
+                    "displayName": "FloodSense warned"
+                  },
+                  {
+                    "fieldName": "floodsense_lead_min",
+                    "displayName": "FloodSense's lead (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "public_warning_min",
+                    "displayName": "Public's warning with FloodSense (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "floodsense_peak_tier",
+                    "displayName": "FloodSense's peak in the hour before"
+                  },
+                  {
+                    "fieldName": "floodsense_peak_chance",
+                    "displayName": "Peak chance",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "rule_warned",
+                    "displayName": "Rule warned"
+                  },
+                  {
+                    "fieldName": "rule_lead_min",
+                    "displayName": "Rule's lead (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "scored_by",
+                    "displayName": "Scored by"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flood by flood",
+                "showDescription": true,
+                "description": "Newest first. Counted: whether the flood could be judged"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 12,
+            "height": 8
+          }
+        }
+      ]
+    },
+    {
+      "name": "areas",
+      "displayName": "Warnings by area",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "areas_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Warnings by area, after training\n",
+                "\n",
+                "A warning came true if PUB issued any flood alert in the area while it was in force (until an hour after its last 5-minute tick); otherwise it was a false alarm."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "areas_level_filter",
+            "queries": [
+              {
+                "name": "areas_level_filter_query",
+                "query": {
+                  "datasetName": "ds_area",
+                  "fields": [
+                    {
+                      "name": "warning_by",
+                      "expression": "`warning_by`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "warning_by",
+                    "displayName": "Warning",
+                    "queryName": "areas_level_filter_query"
+                  }
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "FloodSense, moderate or above"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warning"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "areas_warnings",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_area",
+                  "fields": [
+                    {
+                      "name": "sum(warnings)",
+                      "expression": "SUM(`warnings`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(warnings)",
+                  "displayName": "Warnings",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warnings",
+                "showDescription": true,
+                "description": "Since 20 Dec 2025, every area"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "areas_false_alarms",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_area",
+                  "fields": [
+                    {
+                      "name": "sum(false_alarms)",
+                      "expression": "SUM(`false_alarms`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(false_alarms)",
+                  "displayName": "False alarms",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "False alarms",
+                "showDescription": true,
+                "description": "Warnings with no PUB alert while in force"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "areas_warnings_chart",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_area",
+                  "fields": [
+                    {
+                      "name": "area",
+                      "expression": "`area`"
+                    },
+                    {
+                      "name": "came_true",
+                      "expression": "`came_true`"
+                    },
+                    {
+                      "name": "false_alarms",
+                      "expression": "`false_alarms`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "area",
+                  "displayName": "Area",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "alphabetical"
+                    }
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "came_true",
+                      "displayName": "Came true"
+                    },
+                    {
+                      "fieldName": "false_alarms",
+                      "displayName": "False alarm"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warnings by area",
+                "showDescription": true,
+                "description": "Warnings a PUB alert followed, and false alarms"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "areas_events_chart",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_area",
+                  "fields": [
+                    {
+                      "name": "area",
+                      "expression": "`area`"
+                    },
+                    {
+                      "name": "warned_first",
+                      "expression": "`warned_first`"
+                    },
+                    {
+                      "name": "not_warned_first",
+                      "expression": "`not_warned_first`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "area",
+                  "displayName": "Area",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "alphabetical"
+                    }
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "warned_first",
+                      "displayName": "Warned before PUB"
+                    },
+                    {
+                      "fieldName": "not_warned_first",
+                      "displayName": "Not warned first"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "PUB alert events by area",
+                "showDescription": true,
+                "description": "Events with a warning out before PUB's first alert, and the rest"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "areas_table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_area",
+                  "fields": [
+                    {
+                      "name": "area",
+                      "expression": "`area`"
+                    },
+                    {
+                      "name": "warning_by",
+                      "expression": "`warning_by`"
+                    },
+                    {
+                      "name": "warnings",
+                      "expression": "`warnings`"
+                    },
+                    {
+                      "name": "came_true",
+                      "expression": "`came_true`"
+                    },
+                    {
+                      "name": "false_alarms",
+                      "expression": "`false_alarms`"
+                    },
+                    {
+                      "name": "hours_warned",
+                      "expression": "`hours_warned`"
+                    },
+                    {
+                      "name": "pub_alert_events",
+                      "expression": "`pub_alert_events`"
+                    },
+                    {
+                      "name": "warned_first",
+                      "expression": "`warned_first`"
+                    },
+                    {
+                      "name": "mean_lead_min",
+                      "expression": "`mean_lead_min`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "area",
+                    "displayName": "Area"
+                  },
+                  {
+                    "fieldName": "warning_by",
+                    "displayName": "Warning"
+                  },
+                  {
+                    "fieldName": "warnings",
+                    "displayName": "Warnings",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "came_true",
+                    "displayName": "Came true",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "false_alarms",
+                    "displayName": "False alarms",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "hours_warned",
+                    "displayName": "Hours under a warning",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "pub_alert_events",
+                    "displayName": "PUB alert events",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "warned_first",
+                    "displayName": "Warned before PUB",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "mean_lead_min",
+                    "displayName": "Mean lead (min)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Area by area",
+                "showDescription": true,
+                "description": "Most false alarms first"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 19,
+            "width": 12,
+            "height": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "alerts",
+      "displayName": "PUB alerts and flood-prone land",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "alerts_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## PUB alerts and flood-prone land\n",
+                "\n",
+                "Every alert on PUB's Flood Alerts channel since Nov 2021, placed in NEA's 47 forecast areas, and the land PUB lists as flood-prone each year."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "prone_now",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_prone_kpi",
+                  "fields": [
+                    {
+                      "name": "hectares_latest",
+                      "expression": "`hectares_latest`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "hectares_latest",
+                  "displayName": "Flood-prone land, 2025",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  },
+                  "formatTemplate": "{{ @formatted }} ha"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flood-prone land, 2025",
+                "showDescription": true,
+                "description": "Hectares on PUB's list"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "prone_change",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_prone_kpi",
+                  "fields": [
+                    {
+                      "name": "change_ha",
+                      "expression": "`change_ha`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "change_ha",
+                  "displayName": "Change since 2022",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  },
+                  "formatTemplate": "{{ @formatted }} ha"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Change since 2022",
+                "showDescription": true,
+                "description": "Hectares, against PUB's 2022 list"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "alerts_count",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_alerts",
+                  "fields": [
+                    {
+                      "name": "count(alert_time)",
+                      "expression": "COUNT(`alert_time`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "count(alert_time)",
+                  "displayName": "PUB alerts since Nov 2021",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "PUB alerts since Nov 2021",
+                "showDescription": true,
+                "description": "Risk of flash floods and flash floods, on PUB's Flood Alerts channel"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "floods_total",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_alerts",
+                  "fields": [
+                    {
+                      "name": "sum(is_flood)",
+                      "expression": "SUM(`is_flood`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_flood)",
+                  "displayName": "Flash floods among them",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flash floods among them",
+                "showDescription": true,
+                "description": "Alerts that a flash flood occurred"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "prone_chart",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_prone",
+                  "fields": [
+                    {
+                      "name": "year",
+                      "expression": "`year`"
+                    },
+                    {
+                      "name": "hectares",
+                      "expression": "`hectares`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "year",
+                  "displayName": "Year",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "alphabetical"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "hectares",
+                  "displayName": "Hectares",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Flood-prone land by year",
+                "showDescription": true,
+                "description": "Hectares on PUB's list each year"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "alerts_by_year",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_alerts",
+                  "fields": [
+                    {
+                      "name": "year",
+                      "expression": "`year`"
+                    },
+                    {
+                      "name": "alert_type",
+                      "expression": "`alert_type`"
+                    },
+                    {
+                      "name": "count(alert_time)",
+                      "expression": "COUNT(`alert_time`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "year",
+                  "displayName": "Year",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "alphabetical"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "count(alert_time)",
+                  "displayName": "Alerts",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "alert_type",
+                  "displayName": "Alert",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Flash flood",
+                        "color": "#BF3F2D"
+                      },
+                      {
+                        "value": "Risk of flash floods (drain at 90%)",
+                        "color": "#E2A03A"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "PUB alerts by year",
+                "showDescription": true,
+                "description": "2021 starts in November; 2026 runs to date"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 5,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "alerts_map",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_alerts",
+                  "fields": [
+                    {
+                      "name": "lat",
+                      "expression": "`lat`"
+                    },
+                    {
+                      "name": "lon",
+                      "expression": "`lon`"
+                    },
+                    {
+                      "name": "alert_type",
+                      "expression": "`alert_type`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "symbol-map",
+              "encodings": {
+                "coordinates": {
+                  "latitude": {
+                    "fieldName": "lat"
+                  },
+                  "longitude": {
+                    "fieldName": "lon"
+                  }
+                },
+                "color": {
+                  "fieldName": "alert_type",
+                  "displayName": "Alert",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Flash flood",
+                        "color": "#BF3F2D"
+                      },
+                      {
+                        "value": "Risk of flash floods (drain at 90%)",
+                        "color": "#E2A03A"
+                      }
+                    ]
+                  }
+                }
+              },
+              "mark": {
+                "opacity": 0.6
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Where PUB's alerts were",
+                "showDescription": true,
+                "description": "Each dot is one alert, at the place PUB named"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 6,
+            "height": 9
+          }
+        },
+        {
+          "widget": {
+            "name": "alerts_by_area",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_alerts",
+                  "fields": [
+                    {
+                      "name": "area",
+                      "expression": "`area`"
+                    },
+                    {
+                      "name": "alert_type",
+                      "expression": "`alert_type`"
+                    },
+                    {
+                      "name": "count(alert_time)",
+                      "expression": "COUNT(`alert_time`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "count(alert_time)",
+                  "displayName": "Alerts",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "area",
+                  "displayName": "Area",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "alphabetical"
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "alert_type",
+                  "displayName": "Alert",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Flash flood",
+                        "color": "#BF3F2D"
+                      },
+                      {
+                        "value": "Risk of flash floods (drain at 90%)",
+                        "color": "#E2A03A"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "PUB alerts by area",
+                "showDescription": true,
+                "description": "Since Nov 2021"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 11,
+            "width": 6,
+            "height": 9
+          }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#E3E6DF",
+        "dark": "#1F272D"
+      },
+      "widgetBackgroundColor": {
+        "light": "#F4F5F1",
+        "dark": "#11171C"
+      },
+      "widgetBorderColor": {
+        "light": "#F4F5F1",
+        "dark": "#11171C"
+      },
+      "fontColor": {
+        "light": "#14283B",
+        "dark": "#E8ECF0"
+      },
+      "selectionColor": {
+        "light": "#2C6E7C",
+        "dark": "#8ACAFF"
+      },
+      "visualizationColors": [
+        "#4A5B6A",
+        "#2C6E7C",
+        "#C9A66B",
+        "#E2A03A",
+        "#BF3F2D",
+        "#9CC3C8",
+        "#14283B"
+      ],
+      "widgetHeaderAlignment": "LEFT"
+    }
+  }
+}

@@ -3,6 +3,8 @@
 # location_key, so spelling variants of the same place need only one row); lat/lon in WGS84 degrees.
 # 21 Oct 2026: the 29 locations of silver.alerts_unplaced (50 warnings; each blanked its hour's labels in every area)
 # and one correction, from the PUB sensor the alert names, OneMap, or the gazetteer's own placing of the same place.
+# 23 Oct 2026: two sensors whose reworded texts OneMap placed in the neighbouring area, put at the PUB sensor the
+# alerts come from (its nearest label point decides the area): CWS046 (Hougang) and CWS163 (Toa Payoh).
 location,lat,lon,note
 14 Tractor Road,1.324953,103.707728,"OneMap: 14 Tractor Road, Singapore 627973"
 Aljunied Rd under PIE Flyover,1.32027,103.88196,PUB sensor CWS327 Aljunied Rd (Hong Leong NKF)
@@ -22,6 +24,7 @@ Mt Vernon Rd,1.3415,103.88113,PUB sensor CWS162 Mt Vernon Rd/Bartley Rd
 PIE (towards Changi Airport) after TPE,1.358,103.97,approximate: the PIE just east of its TPE interchange
 PIE(Tuas) towards KJE(BKE) Exit (Exit 35),1.344,103.74,"approximate: the PIE's KJE exit, as KJE (Slip Road to PIE)"
 Seletar Rd / Neram,1.3869,103.86724,PUB sensor EWS054 Neram Rd OD (Unit 18A)
+Service Rd off Upper Paya Lebar Road (near Lim Teck Boo Road),1.342602,103.883584,"PUB sensor CWS046 Upp Paya Lebar Rd/Rochdale Rd: PUB's wording from 12 Dec 2025 (before: Upper Paya Lebar Rd); OneMap put it 1 km south, in Geylang"
 Sg Pandan Kechil (AYE),1.29794,103.783,PUB sensor WWS057 Sg Pandan Kechil (AYE 7.9km)
 Sg Pandan Kechil (NUS),1.29794,103.783,as Sg Pandan Kechil (AYE): PUB sensor WWS057
 Sg Tengah/Sg Tengah Agrotechnology Pk,1.38248,103.73115,PUB sensor WWS044 81 Sg Tengah Rd
@@ -30,6 +33,7 @@ Sg Tongkang (AMK Ave 5),1.377311,103.860486,"approximate: OneMap Ang Mo Kio Ave 
 Tampines Road (Outside Paya Lebar Air Base),1.37,103.905,approximate: Tampines Rd along the air base's north side
 Telok Kurau,1.31187,103.91647,PUB sensor EWS155 Siglap Canal (Lor M Telok Kurau)
 Telok Kurau (Still Rd),1.309847,103.907761,"OneMap: Still Road, by Lorong Stangee"
+Thomson Rd (Balestier Rd to Novena Rise),1.32639,103.84246,"PUB sensor CWS163 Balestier Rd / Thomson Rd: PUB's wording from 2024 (before: Balestier Rd / Thomson Rd); OneMap put the stretch 1.3 km away, in Kallang"
 Ubi Ave 1,1.33111,103.90119,approximate: PUB sensor CWS082 Kaki Bukit OD No 1 (Ubi Ave 2)
 Upp Hokkien St,1.28532,103.84634,as Upp Hokkien St/South Bridge Rd (PUB sensor)
 Upp Thomson Rd (Opp Pierce Sec Sch),1.366659,103.830216,"OneMap: Peirce Secondary School, Sin Ming Walk"

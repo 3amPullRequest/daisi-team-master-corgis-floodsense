@@ -1,0 +1,40 @@
+# Publishes the live model's scoreboard as tables in the ml schema, for the agencies' AI/BI dashboard and Genie space
+# (src/daisi_team_master_corgis_floodsense/ml/publish.py). Manual, whenever @champion moves:
+#   databricks bundle run scoreboard -t dev -p flood_dev
+# It scores every area-tick after training with the champion and the rule (about 4 million rows, a month at a time),
+# so run it with the warehouse idle on Free Edition, and not during a demo.
+resources:
+  jobs:
+    scoreboard:
+      name: flood-scoreboard
+      max_concurrent_runs: 1
+      timeout_seconds: 2400
+      parameters:
+        - name: alias
+          default: "champion"   # the version to publish
+      tasks:
+        - task_key: publish
+          environment_key: ml
+          spark_python_task:
+            python_file: ../src/ml/publish_scoreboard.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --gold-schema
+              - ${resources.schemas.gold.name}
+              - --silver-schema
+              - ${resources.schemas.silver.name}
+              - --ml-schema
+              - ${resources.schemas.ml.name}
+              - --experiment
+              - ${resources.experiments.training.name}
+              - --model
+              - ${resources.registered_models.floodsense.name}
+              - --alias
+              - "{{job.parameters.alias}}"
+      environments:
+        - environment_key: ml   # as flood-train's, which logged the model
+          spec:
+            environment_version: "6"   # Python 3.12, pandas 2.3, scikit-learn 1.7, mlflow-skinny 3.12
+            dependencies:
+              - lightgbm==4.7.0

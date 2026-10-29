@@ -1,22 +1,32 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { getJson, type Located } from "../lib/api";
+import { placeName } from "../lib/places";
 
-type Props = { onFound: (area: string, place: string) => void };
+type Props = {
+  areas: string[];
+  /** the area found, and the place the visitor asked about (null when they picked the area itself) */
+  onFound: (area: string, place: string | null) => void;
+};
 
-/** A street, building or postal code, or the phone's own location, to the forecast area it falls in. */
-export function LocationSearch({ onFound }: Props) {
+/** A street, building or postal code, the phone's own location, or an area from the list, to its forecast area. */
+export function LocationSearch({ areas, onFound }: Props) {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
 
   async function search(e: React.FormEvent) {
     e.preventDefault();
-    if (q.trim().length < 2) return;
+    if (q.trim().length < 2) {
+      setMessage("Type a street, building or postal code first.");
+      input.current?.focus();
+      return;
+    }
     setBusy(true);
     setMessage(null);
     try {
       const found = await getJson<Located>(`/api/locate?q=${encodeURIComponent(q.trim())}`);
-      onFound(found.area, found.place);
+      onFound(found.area, placeName(found.place));
     } catch (err) {
       setMessage((err as Error).message);
     } finally {
@@ -44,7 +54,7 @@ export function LocationSearch({ onFound }: Props) {
       },
       () => {
         setBusy(false);
-        setMessage("Location access was turned down. Search for a street or postal code instead.");
+        setMessage("This browser didn't share your location. Search for a street or postal code instead.");
       },
       { timeout: 10_000 },
     );
@@ -52,23 +62,41 @@ export function LocationSearch({ onFound }: Props) {
 
   return (
     <form className="search" onSubmit={search} role="search">
-      <label htmlFor="place">Check a street, building or postal code</label>
+      <label htmlFor="place">Check your street, building or postal code</label>
       <div className="search-row">
         <input
           id="place"
+          ref={input}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="e.g. 588996 or Dunearn Road"
           autoComplete="street-address"
           enterKeyHint="search"
         />
-        <button type="submit" disabled={busy || q.trim().length < 2}>
+        <button type="submit" disabled={busy}>
           {busy ? "Checking…" : "Check"}
         </button>
       </div>
-      <button type="button" className="link" onClick={useMyLocation} disabled={busy}>
-        Use my location
-      </button>
+      <div className="search-more">
+        <button type="button" className="link" onClick={useMyLocation} disabled={busy}>
+          Use my location
+        </button>
+        <span aria-hidden="true">or</span>
+        <select
+          aria-label="Pick an area from the list"
+          value=""
+          onChange={(e) => {
+            if (e.target.value) onFound(e.target.value, null);
+          }}
+        >
+          <option value="">Pick an area</option>
+          {areas.map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
+        </select>
+      </div>
       {message ? (
         <p className="search-message" role="status">
           {message}

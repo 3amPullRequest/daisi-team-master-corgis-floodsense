@@ -8,8 +8,8 @@ parsers as Spark UDFs, and the hand-kept seed files in data/static/.
   NULL when it is missing or of another type, never an error. `in_singapore` and `distance_km` are the coordinate
   check (a box around the island and its islets) and the haversine distance (as labels/locations.haversine_km) that
   silver uses to place points; the distance is defined in the floodsense package's features.py, which flood-live shares.
-- The floodsense parsers. `parse_alert`, `location_key`, `name_match` and `svy21_to_wgs84` are the pure-Python
-  functions of the labels package wrapped as UDFs, so Spark reads alerts exactly as the fetchers and tests do. Their
+- The floodsense parsers. `parse_alert`, `read_jev`, `location_key`, `name_match` and `svy21_to_wgs84` are the
+  pure-Python functions of the labels package wrapped as UDFs, so Spark reads alerts exactly as the fetchers and tests do. Their
   modules are registered with cloudpickle to travel by value: the executors can't import this repository's package.
 - Seeds. `seed` reads a CSV kept by hand in data/static/ (the Telegram label fixes, the gazetteer fixes), with its
   columns cast from text, or an empty table when the file is missing.
@@ -26,10 +26,11 @@ from pyspark.sql import functions as F
 from daisi_team_master_corgis_floodsense.features import (  # noqa: F401  (silver and gold import it from here)
     distance_km,
 )
-from daisi_team_master_corgis_floodsense.labels import alert_text, locations
+from daisi_team_master_corgis_floodsense.labels import alert_text, jev, locations
 
 # The UDFs' code travels with them (pickled by value), so the executors don't need src/ on their path.
 cloudpickle.register_pickle_by_value(alert_text)
+cloudpickle.register_pickle_by_value(jev)
 cloudpickle.register_pickle_by_value(locations)
 
 SEEDS = Path(__file__).resolve().parents[3] / "data" / "static"
@@ -69,6 +70,9 @@ def in_singapore(lat: str = "lat", lon: str = "lon") -> str:
 # executors can't import this package. Filter out NULL inputs first where a function doesn't take them.
 
 parse_alert = F.udf(alert_text.parse_row, alert_text.ROW_SCHEMA)
+read_jev = F.udf(
+    jev.read_row, alert_text.ROW_SCHEMA
+)  # a landed Jev call's answers, read as parse_alert reads a post
 location_key = F.udf(locations.location_key, "string")
 name_match = F.udf(locations.name_match, "double")
 svy21_to_wgs84 = F.udf(locations.svy21_to_wgs84, "struct<lat: double, lon: double>")

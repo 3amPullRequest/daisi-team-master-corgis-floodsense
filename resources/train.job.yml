@@ -1,11 +1,13 @@
-# Trains the gated LightGBM pair and the rainfall rule on gold, logs both to MLflow and registers the pair in Unity
+# Trains the FloodSense models and the rainfall rule on gold, logs them to MLflow and registers the best in Unity
 # Catalog (src/daisi_team_master_corgis_floodsense/ml/train.py). Manual: it refreshes gold first, then trains.
 #   databricks bundle run train -t dev -p flood_dev
 #   databricks bundle run train -t dev -p flood_dev --params score_test=true   # the single look at the test split
-#   databricks bundle run train -t dev -p flood_dev --params compare_without=tide,forecast   # what each group adds
-#   a sweep, logged and compared in sweep.json, registering nothing (one --params per key, as values hold commas):
-#   databricks bundle run train -t dev -p flood_dev --params gate_recalls=0.8,0.9,0.95,0.99,1 \
-#     --params variants=category:1,credibility:1 --params register=false --params compare_without=
+#   databricks bundle run train -t dev -p flood_dev --params compare_without=antecedent,tide   # what each group adds
+#   databricks bundle run train -t dev -p flood_dev --params promote=false   # @challenger only, for flood-verify
+#   a sweep, logged and compared in sweep.json, registering nothing (one --params per key, as values hold commas; a
+#   value with "=" in it, as model options have, needs the whole key=value in double quotes, or the CLI splits it):
+#   databricks bundle run train -t dev -p flood_dev --params '"models=gated,ordinal:alert=gated:flood=logistic"' \
+#     --params register=false --params compare_without=
 resources:
   jobs:
     train:
@@ -13,22 +15,22 @@ resources:
       max_concurrent_runs: 1
       timeout_seconds: 7200
       parameters:
-        - name: gate_recalls
-          default: "0.85,0.9,0.95"   # the gate levels to try; the out-of-fold scoreboard picks one
+        - name: models
+          default: "gated"   # the models to fit, family[:option]... (train.py); the out-of-fold scoreboard picks one
         - name: flood_weight
-          default: "1"   # what a row a flash flood followed weighs in training (10 cost 12 points of events, 22 Oct)
+          default: "1"   # what a row a flash flood followed weighs in training where a model's spec doesn't say
         - name: flood_value
           default: "10"   # what a flood flagged before PUB counts in ranking the fits and choosing the Medium cut-off
-        - name: area_effect
-          default: "credibility"   # the area as a Bühlmann-Straub prior (credibility) or as a category input (category)
-        - name: variants
-          default: ""   # extra fits to compare at every gate recall, area_effect:flood_weight, e.g. "category:1"
+        - name: override
+          default: "true"   # try the rainfall rule as each fit's safety override (kept if it flags more)
         - name: register
-          default: "true"   # "false" logs the chosen pair without registering it
+          default: "true"   # "false" logs the chosen model without registering it
+        - name: promote
+          default: "true"   # "false" registers it as @challenger only; flood-verify then checks it and promotes it
         - name: score_test
           default: "false"
         - name: compare_without
-          default: "tide"   # feature groups (contract.FEATURE_GROUPS) to refit the pair without and compare; "" for none
+          default: "tide"   # feature groups (contract.FEATURE_GROUPS) to refit the model without and compare; "" for none
       tasks:
         - task_key: refresh_gold
           pipeline_task:
@@ -52,18 +54,18 @@ resources:
               - ${resources.experiments.training.name}
               - --model
               - ${resources.registered_models.floodsense.name}
-              - --gate-recall
-              - "{{job.parameters.gate_recalls}}"
+              - --models
+              - "{{job.parameters.models}}"
               - --flood-weight
               - "{{job.parameters.flood_weight}}"
               - --flood-value
               - "{{job.parameters.flood_value}}"
-              - --area-effect
-              - "{{job.parameters.area_effect}}"
-              - --variants
-              - "{{job.parameters.variants}}"
+              - --override
+              - "{{job.parameters.override}}"
               - --register
               - "{{job.parameters.register}}"
+              - --promote
+              - "{{job.parameters.promote}}"
               - --score-test
               - "{{job.parameters.score_test}}"
               - --compare-without

@@ -6,7 +6,9 @@
   in the area, and a polygon that spans two areas counts in both, cell by cell.
 - gold.flood_prone_trend: PUB's flood-prone hectares by year, with the change from the year before.
 
-Neither is a model input: a share is the same at every tick of an area, and the models already read the area.
+Neither is a model input: a share is the same at every tick of an area, and the models already read the area. (The
+ground from the national map, gold.area_terrain in terrain.py, is the same at every tick too, and gold.area_features
+carries it for the models that ask for it, to test whether it changes what the weather does.)
 
 How area_land_use is built. Land use is a set of polygons, but an area is a Voronoi cell around a label point, which
 the data doesn't contain as polygons. So the polygons are turned into points: each is filled with H3 cells, and each
@@ -19,8 +21,7 @@ apart, with the days each is in force. flood_prone_trend is a plain year-on-year
 from pyspark import pipelines as dp
 from pyspark.sql import Window
 from pyspark.sql import functions as F
-from utilities.gold import silver
-from utilities.silver import distance_km
+from utilities.gold import nearest_area, silver
 
 H3_RESOLUTION = 11
 
@@ -46,28 +47,8 @@ def area_land_use():
         "land_use",
         F.explode(F.expr(f"h3_polyfillash3(geometry, {H3_RESOLUTION})")).alias("cell"),
     )
-    centre = F.from_json(
-        F.expr("h3_centerasgeojson(cell)"), "struct<coordinates: array<double>>"
-    )["coordinates"]
-    cells = (
-        land.select("cell")
-        .distinct()
-        .select(
-            "cell",
-            F.get(centre, 1).alias("lat"),
-            F.get(centre, 0).alias("lon"),
-        )
-    )
-    areas = spark.read.table(silver(spark, "forecast_areas")).select(
-        "area", F.col("lat").alias("area_lat"), F.col("lon").alias("area_lon")
-    )
-    km = distance_km(F.col("lat"), F.col("lon"), F.col("area_lat"), F.col("area_lon"))
-    nearest = (
-        cells.crossJoin(F.broadcast(areas))
-        .groupBy("cell")
-        # ties go to the first area by name, so a rebuild places every cell the same way
-        .agg(F.min_by("area", F.struct(km, F.col("area"))).alias("area"))
-    )
+    # ties go to the first area by name, so a rebuild places every cell the same way
+    nearest = nearest_area(land, spark.read.table(silver(spark, "forecast_areas")))
     counted = (
         land.join(nearest, "cell")
         .groupBy("area", "plan", "valid_from", "valid_to", "land_use")

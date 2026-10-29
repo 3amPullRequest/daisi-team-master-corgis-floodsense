@@ -24,6 +24,8 @@ JSON_TABLES: dict[str, str] = {
     "nea_radar_70km": "NEA 70 km rain radar metadata: raw v2 API pages (frames in landing/radar_png)",
     "pub_flood_alerts": "PUB flash-flood alerts (CAP, with lat/lon circles): raw v2 API pages",
     "pub_telegram_posts": "PUB Flood Alerts Telegram posts: 90% drain warnings, flash floods, NEA heavy-rain warnings (live, channel scrape, and posts PUB deleted, from web archive captures)",
+    "telegram_jev_parses": "Every call to Jev (system.ai.typesafeai-jev-1-14-0) for a Telegram post no pattern "
+    "reads: when, the post, the candidate places, Jev's answers and token usage, one line per call",
     "nea_tide_timings": "NEA tide table rows (time, height, high/low), scraped daily",
     "onemap_search": "OneMap search answers for PUB alert locations, one line per query (raw answer in body), for "
     "silver's gazetteer",
@@ -31,6 +33,12 @@ JSON_TABLES: dict[str, str] = {
     "static_mp2025_land_use": "URA Master Plan 2025 land use, one GeoJSON feature per row",
     "static_pub_water_level_sensors": "PUB drain water-level sensors (SVY21 X/Y), one spreadsheet row per row",
     "static_sla_vertical_control": "SLA vertical control benchmarks, one GeoJSON feature per row",
+    "static_national_map_polygon": "National map polygons (coastal outlines, hydrographic features, parks and "
+    "nature reserves, runways), one GeoJSON feature per row",
+    "static_national_map_line": "National map lines (contours 20 m apart, expressways and slip roads, major roads, the "
+    "international boundary), one GeoJSON "
+    "feature per row, or one part of it per row: a line of more than 50,000 vertices lands as consecutive parts "
+    "(ingest/static.py feature_parts)",
 }
 
 HEARTBEAT_TABLE = "ingest_heartbeat"

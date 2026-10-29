@@ -443,7 +443,12 @@ def parse_row(
 ) -> dict:
     """`parse` for Spark: a dict matching ROW_SCHEMA. `posted_at` is an ISO timestamp with an offset; each stamp is
     turned into a moment relative to it."""
-    parsed = parse(text, service=bool(service))
+    return as_row(parse(text, service=bool(service)), posted_at)
+
+
+def as_row(parsed: Parsed, posted_at: str | None) -> dict:
+    """A reading as a dict matching ROW_SCHEMA, its stamps as moments relative to `posted_at` (also used for
+    labels/jev.py's readings)."""
     posted = datetime.fromisoformat(posted_at) if posted_at else None
 
     def moment(stamp: str | None) -> str | None:
