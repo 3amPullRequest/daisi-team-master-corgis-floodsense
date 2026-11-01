@@ -28,7 +28,7 @@ export default function AgenciesView() {
     <article className="agencies">
       <h1 className="headline">For agencies</h1>
       <p className="headline-detail">
-        How FloodSense did, storm by storm, and every PUB alert since 2021. For town councils and agencies planning
+        How FloodSense did, flood by flood, and every PUB alert since 2021. For town councils and agencies planning
         manpower and flood-relief resources.
       </p>
       <div className="advice-tabs agency-tabs" role="tablist" aria-label="For agencies">

@@ -67,7 +67,9 @@ def in_singapore(lat: str = "lat", lon: str = "lon") -> str:
 
 # --- the floodsense parsers, as UDFs ----------------------------------------------------------------------------------
 # Only functions of the modules registered above: a function defined here would be pickled by reference, and the
-# executors can't import this package. Filter out NULL inputs first where a function doesn't take them.
+# executors can't import this package. Those modules import each other's names, never each other: a module object is
+# pickled whole, __loader__ included, which on Databricks belongs to dbruntime and won't unpickle on the executors
+# (tests/test_silver_udfs.py repeats the list above). Filter out NULL inputs first where a function doesn't take them.
 
 parse_alert = F.udf(alert_text.parse_row, alert_text.ROW_SCHEMA)
 read_jev = F.udf(

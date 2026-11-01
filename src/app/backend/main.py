@@ -4,12 +4,13 @@
                              the tide, freshness
     /api/areas/{area}        one area's tiers and chance over the last hours
     /api/locate?q=           a street, building or postal code (OneMap) -> the forecast area it falls in
-    /api/track-record        how the live model did out of fold, from its MLflow run
+    /api/track-record        how the live model did since 20 Dec 2025, after its training data ended (ml.scoreboard)
     /api/replays             storm days the model never trained on
     /api/replays/{day}       the champion run tick by tick over that day, with PUB's alerts
     /api/agencies            where the agencies' AI/BI scoreboard and Genie space are, to embed and link
     /api/ask                 a question for the Genie space (POST), answered at /api/ask/{conversation}/{message}
     /api/subscriptions       warnings by email or text: the visitor's (GET), a new one (POST), stop one (DELETE /{id})
+    /api/follow              where the Telegram bot is that warns people wherever they are
 
 The React app (frontend/dist) is served from /.
 """
@@ -301,6 +302,14 @@ async def nearest(
 
 
 # --- track record ----------------------------------------------------------------------------------------------------
+# How FloodSense did on the storms after its training data ended (from contract.TEST_START, 20 Dec 2025), as
+# flood-scoreboard publishes it for the agencies' dashboard and Genie (ml/publish.py): the flash floods it caught, its
+# lead time before them, and the chance of a PUB alert or a flash flood given a warning, at Moderate or above and at
+# Elevated. Nothing here is cross-validated on the training data. The tiers' cut-offs come from the champion's run.
+MEASURES = (
+    "flash_floods", "floods_warned", "floods_caught", "floods_caught_share_lo", "floods_caught_share_hi",
+    "flood_mean_lead_min", "warnings", "warnings_followed_by_alert", "warnings_followed_by_flood",
+)  # fmt: skip
 
 
 def _load_track_record() -> dict:
@@ -315,27 +324,33 @@ def _load_track_record() -> dict:
     mv = w.model_versions.get(S.model_full_name, version)
     run = w.experiments.get_run(mv.run_id).run
     m = {x.key: x.value for x in run.data.metrics or []}
-    p = {x.key: x.value for x in run.data.params or []}
-    keep = (
-        "oof_alert_events", "oof_alert_days", "oof_alert_flagged_before_pub", "oof_alert_flagged_before_pub_lo",
-        "oof_alert_flagged_before_pub_hi", "oof_alert_mean_lead_min", "oof_alert_mean_warning_min_lo",
-        "oof_alert_mean_warning_min_hi", "oof_false_alarms_per_area_month", "oof_warned_hours_per_area_month",
-        "rule_dev_alert_flagged_before_pub", "rule_dev_alert_mean_lead_min", "rule_dev_false_alarms_per_area_month",
-        "without_tide_delta_alert_flagged_before_pub", "without_tide_alert_flagged_only_with",
-        "without_tide_alert_flagged_only_without", "without_tide_alert_mcnemar_p",
-        "oof_floods_judged", "oof_floods_warned", "oof_floods_warned_before_pub", "oof_floods_mean_lead_min",
-        # with the tiers as fixed chances (final_1): their cut-offs, Elevated alone, and how often warnings came true
-        "pair_medium_p", "pair_high_p", "oof_high_alert_flagged_before_pub", "oof_high_alert_mean_lead_min",
-        "oof_high_false_alarms_per_area_month", "oof_medium_warning_alert_share", "oof_high_warning_alert_share",
-    )  # fmt: skip
+    rows = db.query(
+        S.warehouse_id,
+        f"""SELECT warning_level, model_version, CAST(period_start AS STRING) AS period_start,
+                   CAST(period_end AS STRING) AS period_end, {", ".join(MEASURES)}
+            FROM {_t("ml", "scoreboard")}
+            WHERE period = 'after_training' AND model = 'FloodSense'""",
+    )
+    by_level = {r["warning_level"]: r for r in rows}
+    moderate, elevated = by_level.get("Moderate or above"), by_level.get("Elevated")
     own = [a.alias_name for a in registered.aliases or [] if a.version_num == version]
     return {
         "model": models.version_name(S.model, version, own),
         "version": str(version),
         "trained_at": mv.created_at,
-        "development": p.get("development"),
-        "rule": p.get("rule"),
-        "metrics": {k: m[k] for k in keep if k in m},
+        # the tiers as fixed chances of a PUB alert within the hour (final_1 on)
+        "medium_p": m.get("pair_medium_p"),
+        "high_p": m.get("pair_high_p"),
+        # the scoreboard flood-scoreboard last published, which may be of an earlier version than the champion's
+        "test": {
+            "model": moderate["model_version"],
+            "from": moderate["period_start"],
+            "to": moderate["period_end"],
+            "moderate": {k: moderate[k] for k in MEASURES},
+            "elevated": {k: elevated[k] for k in MEASURES} if elevated else None,
+        }
+        if moderate
+        else None,
     }
 
 
@@ -718,6 +733,17 @@ async def unsubscribe(subscription_id: str = PathParam(pattern=r"^[0-9a-f-]{36}$
         {"id": subscription_id},
     )
     return {"stopped": subscription_id}
+
+
+# Following a phone's location needs an app on the phone, so it is Telegram's: the visitor shares their live location
+# with the bot, and flood-live answers them and tells them the warning where they are (ml/follow.py). The app only links
+# to the bot, and never sees where anyone is.
+
+
+@app.get("/api/follow")
+async def follow() -> dict:
+    bot = S.telegram_bot
+    return {"bot": bot or None, "url": f"https://t.me/{bot}?start=follow" if bot else None}
 
 
 # --- the web app -----------------------------------------------------------------------------------------------------

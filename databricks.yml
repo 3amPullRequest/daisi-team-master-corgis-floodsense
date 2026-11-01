@@ -30,6 +30,12 @@ variables:
   warning_channel:
     description: Public Telegram channel flood-live posts warnings to, as the bot whose token is the secret scope's telegram-bot-token (an administrator of the channel)
     default: "@daisi_floodsense"
+  warning_bot:
+    description: That bot's username, without the @, which the app links to for warnings wherever you are (t.me/<bot>?start=follow)
+    default: daisi_floodsense_bot
+  follow_telegram:
+    description: Whether flood-live reads the bot's private messages and follows people's Telegram locations (ml/follow.py). Telegram hands each message to whichever deployment reads it first, so set "true" in one deployment of the bot only (BUNDLE_VAR_follow_telegram, or .databricks/bundle/dev/variable-overrides.json)
+    default: "false"
   live_schedule:
     description: Quartz cron for flood-live; every 5 min (use 0/15 outside demo windows to save Free Edition quota)
     default: "0 0/5 * * * ?"

@@ -18,8 +18,9 @@ sent for a tick more than FRESH old: after an outage, old warnings are history, 
 The app's Now view writes the subscriptions (an email address or a Singapore mobile number, and the areas) to
 <app schema>.warning_subscriptions, apart from the analytics schemas because it holds personal data. A sender with no
 credentials in the secret scope (telegram-bot-token; parser-alert-smtp-user and -password; twilio-account-sid,
--auth-token and -from-number) is skipped, and the run's summary says so. Nothing here can fail the scoring: live.main
-logs any error and carries on.
+-auth-token and -from-number) is skipped, and the run's summary says so. People who follow the bot in a private chat
+hear about the warnings wherever they are from ml/follow.py. Nothing here can fail the scoring: live.main logs any error
+and carries on.
 
 Try the senders without a storm, as your profile:
 
@@ -259,14 +260,29 @@ def welcome_text(areas: list[str]) -> str:
 
 @dataclass(frozen=True)
 class Telegram:
-    """A bot that is an administrator of the channel, allowed to post (its token from @BotFather)."""
+    """A bot that is an administrator of the channel, allowed to post (its token from @BotFather). It also talks to
+    the people who follow it in private chats (ml/follow.py)."""
 
     token: str
     chat: str = CHANNEL
 
     def send(self, text: str) -> None:
-        body = {"chat_id": self.chat, "text": text, "disable_web_page_preview": "true"}
+        self.message(self.chat, text)
+
+    def message(self, chat: int | str, text: str, keyboard: dict | None = None) -> None:
+        body = {"chat_id": chat, "text": text, "disable_web_page_preview": "true"}
+        if keyboard:
+            body["reply_markup"] = json.dumps(keyboard)
         _post(f"https://api.telegram.org/bot{self.token}/sendMessage", body, None, "description")
+
+    def updates(self, offset: int | None = None, limit: int = 100) -> list[dict]:
+        """The private messages people sent the bot, and their edits, that no call has confirmed yet (getUpdates).
+        Asking with `offset` confirms every update before it; Telegram keeps the rest for 24 hours."""
+        body = {"timeout": 0, "limit": limit, "allowed_updates": json.dumps(["message", "edited_message"])}
+        if offset is not None:
+            body["offset"] = offset
+        found = _post(f"https://api.telegram.org/bot{self.token}/getUpdates", body, None, "description")
+        return found.get("result") or []
 
 
 @dataclass(frozen=True)

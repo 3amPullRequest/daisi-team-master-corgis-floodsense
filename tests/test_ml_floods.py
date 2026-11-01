@@ -117,3 +117,80 @@ def test_it_takes_the_scoreboards_arguments_as_train_passes_them():
     preds = predictions("Bedok", {"14:30": 0.07})
     judge = {"alerts": alerts(("Bedok", "14:40", C.FLASH_FLOOD)), **WINDOW, "missing": None, "blind": None}
     assert len(floods.flood_table(preds, **judge)) == 1
+
+
+def reports(*rows: tuple[str, str, str]) -> pd.DataFrame:
+    """Flash-flood reports with the place PUB named."""
+    return pd.DataFrame(
+        [(area, at(hhmm), C.FLASH_FLOOD, place) for area, hhmm, place in rows],
+        columns=["area", "alert_ts", "kind", "location"],
+    )
+
+
+def test_every_flash_flood_report_counts_on_its_own_even_minutes_apart_in_one_area():
+    # Tanglin warned at 16:30 and 16:35; two roads flooded at 17:11 and 17:15, after PUB's drain warning at 16:47
+    preds = predictions("Tanglin", {"16:30": 0.08, "16:35": 0.08})
+    pub = pd.concat(
+        [
+            alerts(("Tanglin", "16:47", C.WARNING)),
+            reports(("Tanglin", "17:11", "King's Road"), ("Tanglin", "17:15", "Coronation Road")),
+        ],
+        ignore_index=True,
+    )
+    table = floods.report_table(preds, pub, **WINDOW)
+    assert list(table["location"]) == ["King's Road", "Coronation Road"]  # a drain warning is no flood: no row
+    assert list(table["warned_from"]) == [at("16:30")] * 2 and list(table["lead_min"]) == [41, 45]
+    assert table["caught"].all() and table["judged"].all()
+    assert list(table.columns) == floods.REPORT_COLUMNS
+
+
+def test_a_flood_is_caught_only_when_the_warning_began_5_minutes_to_an_hour_before_it():
+    preds = pd.concat(
+        [
+            predictions("Woodlands", {"15:10": 0.08}),  # 3 minutes before its flood: as it happened
+            predictions("Bedok", {"14:35": 0.08}),  # 5 minutes before
+            predictions("Tampines", {"13:40": 0.08}),  # an hour before: in force until 14:40, the flood's minute
+            predictions("Marine Parade", {"09:45": 0.08, "09:50": 0.08}),  # in force until 10:50, begun 62 min before
+            predictions("Lim Chu Kang", {}),
+        ],
+        ignore_index=True,
+    )
+    pub = reports(
+        ("Woodlands", "15:13", "Riverside Road"),
+        ("Bedok", "14:40", "Bedok North Avenue 3"),
+        ("Tampines", "14:40", "Tampines Avenue 10"),
+        ("Marine Parade", "10:47", "Mountbatten Road"),
+        ("Lim Chu Kang", "15:38", "Neo Tiew Road"),
+    )
+    table = floods.report_table(preds, pub, **WINDOW).set_index("area")
+    assert table["lead_min"].to_dict() == pytest.approx(
+        {"Marine Parade": 62, "Bedok": 5, "Tampines": 60, "Woodlands": 3, "Lim Chu Kang": math.nan}, nan_ok=True
+    )
+    assert table["caught"].to_dict() == {
+        "Marine Parade": False, "Bedok": True, "Tampines": True, "Woodlands": False, "Lim Chu Kang": False,
+    }  # fmt: skip
+    s = floods.report_summary(table)
+    assert s["flash_floods"] == 5 and s["floods_warned"] == 4 and s["floods_caught"] == 2
+    assert s["flood_mean_lead_min"] == pytest.approx((62 + 5 + 60 + 3) / 4)  # over the warned floods: no miss counts 0
+    assert s["floods_caught_share"] == pytest.approx(0.4)
+    assert s["floods_caught_share_lo"] < 0.4 < s["floods_caught_share_hi"]
+
+
+def test_a_report_is_judged_on_what_the_model_saw_in_the_hour_before_it_not_on_lost_posts():
+    preds = pd.concat([predictions("Bedok", {"14:30": 0.08}), predictions("Tanglin", {})], ignore_index=True)
+    pub = reports(("Bedok", "14:40", "Bedok Road"), ("Tanglin", "17:11", "King's Road"))
+    # NEA's feed was out from 13:50 to 14:00, inside Bedok's hour (13:40 to 14:40) and long before Tanglin's
+    blind = pd.Series(pd.date_range(at("13:50"), at("14:00"), freq="5min"))
+    table = floods.report_table(preds, pub, **WINDOW, blind=blind).set_index("area")
+    assert not table.loc["Bedok", "judged"] and table.loc["Tanglin", "judged"]
+    s = floods.report_summary(table)
+    assert s["flash_floods"] == 1 and s["floods_warned"] == 0 and math.isnan(s["flood_mean_lead_min"])
+
+
+def test_reports_outside_the_window_and_warnings_before_it_are_left_out():
+    preds = predictions("Bedok", {"00:00": 0.08})
+    pub = reports(("Bedok", "00:10", "Bedok Road"), ("Bedok", "23:59", "Bedok Road"))
+    late = floods.report_table(preds, pub, start=at("00:05"), end=DAY + pd.Timedelta(days=1))
+    assert list(late["flood_ts"]) == [at("00:10"), at("23:59")]
+    assert late["warned_from"].isna().all()  # the 00:00 warning began before the window, as the scoreboard counts it
+    assert floods.report_table(preds, pub.iloc[:0], **WINDOW).empty

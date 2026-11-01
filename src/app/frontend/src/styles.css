@@ -718,6 +718,18 @@ button.secondary:hover {
 .subscribe-intro {
   margin: 0.35rem 0 0.9rem;
 }
+/* wherever you are: the Telegram bot follows a phone's live location */
+.follow {
+  display: grid;
+  justify-items: start;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+.follow p {
+  margin: 0;
+}
 .subs {
   list-style: none;
   margin: 0 0 1rem;
@@ -783,7 +795,7 @@ button.secondary:hover {
 .signup-area {
   color: var(--ink-soft);
 }
-/* switched off until FloodSense can follow a phone's location */
+/* a phone's location is followed on Telegram, or not yet (switched off) */
 .signup-places .soon {
   display: flex;
   flex-wrap: wrap;
@@ -1105,11 +1117,19 @@ button.secondary:hover {
   font: 700 var(--step-3) / 1 var(--display);
   margin-bottom: 0.4rem !important;
 }
-.compare,
 .how,
 .limits {
   max-width: 64ch;
   margin-bottom: 1.75rem;
+}
+/* the track record, below "Ask a question" */
+.record {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 2px solid var(--ink);
+}
+.record > p {
+  max-width: 64ch;
 }
 .steps {
   margin: 0.75rem 0 0;

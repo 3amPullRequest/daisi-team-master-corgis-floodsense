@@ -17,6 +17,7 @@ class Settings:
     dashboard: str  # the agencies' AI/BI scoreboard (resources/dashboard.yml); empty: none
     genie_space: str  # the agencies' Genie space (resources/genie.yml); empty: none
     app: str  # the app's own schema: warning subscriptions, which hold personal data (resources/uc.yml)
+    telegram_bot: str  # the warning bot's username, for warnings wherever you are (ml/follow.py); empty: none
 
     def table(self, schema: str, name: str) -> str:
         return f"{self.catalog}.{getattr(self, schema)}.{name}"
@@ -40,4 +41,5 @@ def load() -> Settings:
         dashboard=env("FLOODSENSE_DASHBOARD", ""),
         genie_space=env("FLOODSENSE_GENIE_SPACE", ""),
         app=env("FLOODSENSE_APP", f"{prefix}app"),
+        telegram_bot=env("FLOODSENSE_TELEGRAM_BOT", "").lstrip("@"),
     )

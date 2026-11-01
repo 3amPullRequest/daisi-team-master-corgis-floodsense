@@ -1,5 +1,6 @@
-# Publishes the live model's scoreboard as tables in the ml schema, for the agencies' AI/BI dashboard and Genie space
-# (src/daisi_team_master_corgis_floodsense/ml/publish.py). Manual, whenever @champion moves:
+# Publishes the live model's scoreboard over the test period (from 20 Dec 2025) as tables in the ml schema, for the
+# agencies' AI/BI dashboard, the Genie space and the app (src/daisi_team_master_corgis_floodsense/ml/publish.py).
+# Manual, whenever @champion moves:
 #   databricks bundle run scoreboard -t dev -p flood_dev
 # It scores every area-tick after training with the champion and the rule (about 4 million rows, a month at a time),
 # so run it with the warehouse idle on Free Edition, and not during a demo.
@@ -26,8 +27,6 @@ resources:
               - ${resources.schemas.silver.name}
               - --ml-schema
               - ${resources.schemas.ml.name}
-              - --experiment
-              - ${resources.experiments.training.name}
               - --model
               - ${resources.registered_models.floodsense.name}
               - --alias

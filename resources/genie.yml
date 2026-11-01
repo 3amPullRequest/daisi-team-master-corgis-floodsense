@@ -9,7 +9,7 @@ resources:
       title: FloodSense for agencies
       description: >-
         Ask about PUB's flood alerts since Nov 2021, Singapore's flood-prone land, and how FloodSense's flash-flood
-        warnings compared with PUB's alerts and a simple rainfall rule, area by area and flood by flood.
+        warnings did since 20 Dec 2025, beside a simple rainfall rule: flood by flood and area by area.
       warehouse_id: ${var.warehouse_id}
       permissions:
         - group_name: users
@@ -21,7 +21,7 @@ resources:
             - id: "10000000000000000000000000000001"
               question: ["Which areas had the most FloodSense false alarms after training?"]
             - id: "10000000000000000000000000000002"
-              question: ["How much warning did PUB and FloodSense give before each flash flood in 2026?"]
+              question: ["How much warning did FloodSense give before each flash flood in 2026?"]
             - id: "10000000000000000000000000000003"
               question: ["How does FloodSense compare with the rainfall rule?"]
             - id: "10000000000000000000000000000004"
@@ -60,10 +60,10 @@ resources:
                   exclude: true
             - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard
               column_configs:
-                - column_name: alerts_warned_before_pub
-                  synonyms: ["warned first", "early warning rate", "hit rate"]
-                - column_name: false_alarms_per_area_month
-                  synonyms: ["false alarm rate"]
+                - column_name: flood_mean_lead_min
+                  synonyms: ["lead time", "mean lead time", "average warning before a flash flood"]
+                - column_name: floods_caught
+                  synonyms: ["flash floods caught", "floods warned of", "hit rate"]
                 - column_name: model
                   enable_entity_matching: true
                   enable_format_assistance: true
@@ -73,35 +73,24 @@ resources:
                 - column_name: warning_level
                   enable_entity_matching: true
                   enable_format_assistance: true
-            - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard_events
-              column_configs:
-                - column_name: area
-                  enable_entity_matching: true
-                  enable_format_assistance: true
-                - column_name: event_kind
-                  enable_entity_matching: true
-                  enable_format_assistance: true
-                - column_name: model
-                  enable_entity_matching: true
-                  enable_format_assistance: true
-                - column_name: period
-                  enable_entity_matching: true
-                  enable_format_assistance: true
-                - column_name: warning_level
-                  enable_entity_matching: true
-                  enable_format_assistance: true
+                - column_name: warnings_followed_by_alert
+                  synonyms: ["chance of a PUB alert given a warning", "precision", "warnings that came true"]
+                - column_name: warnings_followed_by_flood
+                  synonyms: ["chance of a flash flood given a warning", "flood precision"]
             - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard_floods
               column_configs:
                 - column_name: area
                   enable_entity_matching: true
                   enable_format_assistance: true
+                - column_name: floodsense_caught
+                  synonyms: ["caught", "warned in time"]
                 - column_name: floodsense_lead_min
                   synonyms: ["FloodSense lead time", "FloodSense warning time"]
+                - column_name: location
+                  enable_entity_matching: true
                 - column_name: period
                   enable_entity_matching: true
                   enable_format_assistance: true
-                - column_name: pub_warning_min
-                  synonyms: ["PUB lead time", "PUB warning time"]
             - identifier: ${var.catalog}.${resources.schemas.ml.name}.scoreboard_warnings
               column_configs:
                 - column_name: area
@@ -109,6 +98,8 @@ resources:
                   enable_format_assistance: true
                 - column_name: false_alarm
                   synonyms: ["false alarms", "came to nothing"]
+                - column_name: followed_by_flash_flood
+                  synonyms: ["flood followed", "came true with a flood"]
                 - column_name: model
                   enable_entity_matching: true
                   enable_format_assistance: true
@@ -124,25 +115,28 @@ resources:
               content:
                 - |
                   ## PURPOSE
-                  - Answer agencies' and town councils' questions about PUB's flood alerts since Nov 2021, flood-prone land, and how FloodSense's warnings compared with PUB's alerts and the rainfall rule.
+                  - Answer agencies' and town councils' questions about PUB's flood alerts since Nov 2021, flood-prone land, and how FloodSense's flash-flood warnings did since 20 Dec 2025, beside the rainfall rule.
 
                   ## DISAMBIGUATION
                   - FloodSense warnings with no level named means warning_level 'Moderate or above'; 'Elevated' is the stricter level, and 'Heavy rain' is the rainfall rule's.
-                  - "2026", "recent storms" or "the test" means period 'after_training'; "before 2026" or "history" means 'development'. With no period named, give after_training and say so.
+                  - The scoreboard tables cover period 'after_training' only: storms from 20 Dec 2025, after FloodSense's training data ended. Say so; FloodSense's results on earlier storms aren't published.
+                  - Every Moderate or Elevated rating is a warning for the next hour, so a warning runs from its first rating until an hour after its last. A lead time ("warned N minutes ahead") runs from that first rating to the flash flood.
+                  - A flash flood is caught when a warning was in force and its first rating came 5 minutes to an hour before the flood (scoreboard.floods_caught, scoreboard_floods.floodsense_caught). The mean lead time (scoreboard.flood_mean_lead_min) is over the floods a warning was in force at.
+                  - The chance of a PUB alert, or of a flash flood, given a warning is the share of warnings that one came within while in force (scoreboard.warnings_followed_by_alert, scoreboard.warnings_followed_by_flood).
                   - A false alarm is a warning with no PUB alert while it was in force (scoreboard_warnings.false_alarm).
-                  - Every Moderate or Elevated rating is a warning for the next hour, so a warning runs from its first rating until an hour after its last. A lead time ("warned N minutes ahead") runs from that first rating to PUB's first alert.
                   - "Right now" or "at the moment" means live_risk: risk is the warning in force, as the app's map shows it; latest_rating is the newest 5-minute rating alone.
 
                   ## DATA QUALITY NOTES
                   - Count only rows with judged = true unless asked otherwise: the rest sit where PUB posts were lost or FloodSense's inputs were missing.
-                  - scoreboard_warnings covers after_training only.
+                  - Every flash flood PUB reported counts on its own, so two roads flooding minutes apart in one area are two floods.
                   - Times are Singapore time. Shares are 0 to 1.
                   - live_risk is as fresh as the last scoring run: give its forecast_time.
 
                   ## Instructions you must follow when providing summaries
                   - Give shares as percentages, with the 95% interval where the scoreboard has one.
-                  - Name the period and the warning level the numbers are for.
-                  - FloodSense is an earlier heads-up on top of PUB's alerts, not an official warning.
+                  - Name the warning level the numbers are for, and say they cover storms from 20 Dec 2025.
+                  - Measure FloodSense against the flash floods, as the scoreboard does, not against the timing of PUB's alerts.
+                  - FloodSense is an early heads-up, not an official warning.
           example_question_sqls:
             - id: "20000000000000000000000000000001"
               question: ["Which areas had the most FloodSense false alarms after training?"]
@@ -154,20 +148,19 @@ resources:
                   AND w.warning_level = 'Moderate or above' AND w.judged
                   GROUP BY w.area ORDER BY false_alarms DESC LIMIT 10
             - id: "20000000000000000000000000000002"
-              question: ["How much warning did PUB and FloodSense give before each flash flood in 2026?"]
+              question: ["How much warning did FloodSense give before each flash flood in 2026?"]
               sql:
                 - >-
-                  SELECT f.flood_time, f.area, f.pub_warning_min, f.floodsense_lead_min, f.floodsense_before_pub,
-                  f.rule_lead_min, f.rule_before_pub, f.judged
+                  SELECT f.flood_time, f.area, f.location, f.floodsense_warned_from, f.floodsense_lead_min,
+                  f.floodsense_caught, f.judged
                   FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard_floods AS f
-                  WHERE f.period = 'after_training' ORDER BY f.flood_time
+                  WHERE year(f.flood_time) = 2026 ORDER BY f.flood_time
             - id: "20000000000000000000000000000003"
               question: ["How does FloodSense compare with the rainfall rule after training?"]
               sql:
                 - >-
-                  SELECT s.model, s.warning_level, s.pub_alert_events, s.alerts_warned_before_pub,
-                  s.alerts_warned_before_pub_lo, s.alerts_warned_before_pub_hi, s.alert_mean_lead_min,
-                  s.false_alarms_per_area_month
+                  SELECT s.model, s.warning_level, s.flash_floods, s.floods_caught, s.flood_mean_lead_min, s.warnings,
+                  s.warnings_followed_by_alert, s.warnings_followed_by_flood
                   FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard AS s
                   WHERE s.period = 'after_training' ORDER BY s.model, s.warning_level DESC
             - id: "20000000000000000000000000000004"
@@ -178,13 +171,13 @@ resources:
                   FROM ${var.catalog}.${resources.schemas.ml.name}.pub_alerts AS a
                   WHERE year(a.alert_time) = 2025 GROUP BY a.area ORDER BY alerts DESC LIMIT 10
             - id: "20000000000000000000000000000005"
-              question: ["What was PUB's average warning before a flash flood each year?"]
+              question: ["How many flash floods did FloodSense catch after training?"]
               sql:
                 - >-
-                  SELECT year(f.flood_time) AS year, count(*) AS flash_floods,
-                  round(avg(f.pub_warning_min), 1) AS mean_pub_warning_min
-                  FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard_floods AS f
-                  GROUP BY year(f.flood_time) ORDER BY year
+                  SELECT s.warning_level, s.flash_floods, s.floods_caught, s.floods_caught_share,
+                  s.floods_caught_share_lo, s.floods_caught_share_hi, s.floods_warned, s.flood_mean_lead_min
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard AS s
+                  WHERE s.period = 'after_training' AND s.model = 'FloodSense' ORDER BY s.warning_level DESC
             - id: "20000000000000000000000000000006"
               question: ["How has Singapore's flood-prone land changed since 2022?"]
               sql:
@@ -200,3 +193,19 @@ resources:
                   FROM ${var.catalog}.${resources.schemas.ml.name}.live_risk AS r
                   WHERE r.risk <> 'Low'
                   ORDER BY CASE r.risk WHEN 'Elevated' THEN 0 ELSE 1 END, r.chance DESC
+            - id: "20000000000000000000000000000008"
+              question: ["How often was a FloodSense warning followed by a PUB alert or a flash flood?"]
+              sql:
+                - >-
+                  SELECT s.warning_level, s.warnings, s.warnings_followed_by_alert, s.warnings_followed_by_alert_lo,
+                  s.warnings_followed_by_alert_hi, s.warnings_followed_by_flood, s.warnings_followed_by_flood_lo,
+                  s.warnings_followed_by_flood_hi
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.scoreboard AS s
+                  WHERE s.period = 'after_training' AND s.model = 'FloodSense' ORDER BY s.warning_level DESC
+            - id: "20000000000000000000000000000009"
+              question: ["Which areas had the most flash floods since 2021?"]
+              sql:
+                - >-
+                  SELECT a.area, count(*) AS flash_floods, max(a.alert_time) AS latest
+                  FROM ${var.catalog}.${resources.schemas.ml.name}.pub_alerts AS a
+                  WHERE a.kind = 'flash_flood' GROUP BY a.area ORDER BY flash_floods DESC LIMIT 10

@@ -33,5 +33,5 @@ export function chanceInWords(p: number | null): string {
   return `About 1 in ${nearest.toLocaleString("en-SG")}`;
 }
 
-export const percent = (x: number | undefined, digits = 0) =>
+export const percent = (x: number | null | undefined, digits = 0) =>
   x == null ? "–" : `${(x * 100).toFixed(digits)}%`;

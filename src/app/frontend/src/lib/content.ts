@@ -54,17 +54,19 @@ export const ADVICE: Record<Tier, Record<Audience, string>> = {
 
 export const PUB_CHANNEL = "https://t.me/pubfloodalerts";
 
-// The Genie space's sample questions (resources/genie.yml), each checked against its answer on 25 Oct 2026. Change
-// them together.
+// The Genie space's sample questions (resources/genie.yml), each checked against its answer on 25 Oct 2026, except the
+// second, reworded on 1 Nov 2026 with its example SQL there. Change them together.
 export const AGENCY_QUESTIONS = [
   "Which areas had the most FloodSense false alarms after training?",
-  "How much warning did PUB and FloodSense give before each flash flood in 2026?",
+  "How much warning did FloodSense give before each flash flood in 2026?",
   "How does FloodSense compare with the rainfall rule?",
   "Which areas had the most PUB flood alerts in 2025?",
   "How has Singapore's flood-prone land changed since 2022?",
 ];
 
-// Questions to start from in the other views, for the same Genie space, each checked against its answer on 26 Oct 2026
+// Questions to start from in the other views, for the same Genie space, each checked against its answer on 26 Oct 2026.
+// Those about FloodSense's warnings were reworded on 1 Nov 2026 for the flash floods, each with an example SQL in
+// genie.yml; check their answers once flood-scoreboard has published the new tables.
 export const ASK_QUESTIONS = {
   now: [
     "Which areas have a FloodSense warning in force right now?",
@@ -73,12 +75,12 @@ export const ASK_QUESTIONS = {
   ],
   replay: [
     "Which days in 2026 had the most PUB flood alerts?",
-    "How much warning did PUB and FloodSense give before each flash flood in 2026?",
-    "In which areas did FloodSense most often warn before PUB after training?",
+    "How much warning did FloodSense give before each flash flood in 2026?",
+    "Which areas had the most flash floods since 2021?",
   ],
   reliability: [
-    "How does FloodSense compare with the rainfall rule?",
-    "What share of flash floods did FloodSense warn of before PUB?",
-    "Which areas had the most FloodSense false alarms after training?",
+    "How many flash floods did FloodSense catch after training?",
+    "How much warning did FloodSense give before each flash flood in 2026?",
+    "How often was a FloodSense warning followed by a PUB alert or a flash flood?",
   ],
 };

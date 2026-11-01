@@ -1,9 +1,11 @@
 # The FloodSense app for residents: React (src/app/frontend, built into dist) served by FastAPI (src/app/backend). It
-# reads ml.predictions, the tide and freshness through the SQL warehouse, the model's track record from its MLflow
-# run, and runs the @champion model for storm replays. Its "For agencies" view embeds the AI/BI scoreboard
-# (dashboard.yml), and every view but that one's scoreboard can ask the Genie space (genie.yml), as the app's service
-# principal. The Now view writes sign-ups for warnings by email or text to the app schema (uc.yml), which flood-live
-# sends from. Build the frontend before deploying:
+# reads ml.predictions, the tide, freshness and the track record since 20 Dec 2025 (ml.scoreboard) through the SQL
+# warehouse, the tiers' cut-offs from the model's MLflow run, and runs the @champion model for storm replays. Its "For
+# agencies" view embeds the AI/BI scoreboard (dashboard.yml), and every view but that one's scoreboard can ask the
+# Genie space (genie.yml), as the app's service principal. The Now view writes sign-ups for warnings by email or text
+# to the app schema (uc.yml), which flood-live
+# sends from, and links to the Telegram bot @${var.warning_bot} for warnings wherever you are. Build the frontend
+# before deploying:
 #   (cd src/app/frontend && npm ci && npm run build) && databricks bundle deploy -t dev -p flood_dev
 #   databricks bundle run floodsense_app -t dev -p flood_dev   # starts it
 # The app's service principal needs read access to the tables and the model: see "The app" in DEVELOPER_NOTES.md.
@@ -36,6 +38,8 @@ resources:
             value: ${resources.genie_spaces.agency_genie.id}
           - name: FLOODSENSE_APP
             value: ${resources.schemas.app.name}
+          - name: FLOODSENSE_TELEGRAM_BOT
+            value: ${var.warning_bot}
       resources:
         - name: sql-warehouse
           sql_warehouse:

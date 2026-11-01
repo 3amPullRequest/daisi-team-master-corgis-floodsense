@@ -3,7 +3,8 @@ import { useNow } from "./lib/api";
 import { clock, minutesSince } from "./lib/format";
 import { NowView } from "./views/NowView";
 
-// the live view loads first; the replay (with its model run), the track record and the agencies' view load when opened
+// the live view loads first; the replay (with its model run), how it works (with the track record) and the agencies'
+// view load when opened
 const ReplayView = lazy(() => import("./views/ReplayView"));
 const ReliabilityView = lazy(() => import("./views/ReliabilityView"));
 const AgenciesView = lazy(() => import("./views/AgenciesView"));
@@ -11,7 +12,7 @@ const AgenciesView = lazy(() => import("./views/AgenciesView"));
 const VIEWS = [
   { id: "now", label: "Now" },
   { id: "replay", label: "Replay a storm" },
-  { id: "reliability", label: "How reliable is it?" },
+  { id: "reliability", label: "How it works" },
   { id: "agencies", label: "For agencies" },
 ] as const;
 type View = (typeof VIEWS)[number]["id"];

@@ -1,6 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import useSWR from "swr";
-import { getJson, postJson, type Subscription } from "../lib/api";
+import { type Follow, getJson, postJson, type Subscription } from "../lib/api";
 import { clock } from "../lib/format";
 import { type Place, useSubscriptionIds } from "../lib/places";
 
@@ -18,21 +18,37 @@ type Props = {
 };
 
 /** Sign up for FloodSense's warnings by email for chosen areas, and see or stop the ones already made.
- * Following the visitor's own location is shown, switched off, as coming soon. */
+ * Warnings wherever the visitor is go through the Telegram bot, which can follow a phone's live location; without a
+ * bot configured, that option is shown, switched off, as coming soon. */
 export function Subscribe({ areas, places, shown }: Props) {
   const { ids, remember, forget } = useSubscriptionIds();
   const key = `/api/subscriptions?ids=${ids.join(",")}`;
   const mine = useSWR<{ subscriptions: Subscription[] }>(key, getJson, { revalidateOnFocus: false });
+  const follow = useSWR<Follow>("/api/follow", getJson, { revalidateOnFocus: false, revalidateIfStale: false });
+  const followUrl = follow.data?.url ?? null;
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const title = useId();
 
   return (
     <section className="subscribe" aria-labelledby={title}>
-      <h2 id={title}>Warnings by email</h2>
+      <h2 id={title}>Warnings by email{followUrl ? " or Telegram" : ""}</h2>
       <p className="subscribe-intro">
-        Get a message when FloodSense warns for your places. Each warning covers the next hour.
+        Get a message when FloodSense warns for your places{followUrl ? ", or wherever you are" : ""}. Each warning
+        covers the next hour.
       </p>
+      {followUrl ? (
+        <div className="follow">
+          <p>
+            <strong>Wherever you are, on Telegram.</strong> Share your live location with the FloodSense bot, and it
+            messages you when the area you're in is warned. It keeps only which of the 47 areas you're in, never where
+            you are.
+          </p>
+          <a className="button-link" href={followUrl} target="_blank" rel="noreferrer">
+            Follow me on Telegram
+          </a>
+        </div>
+      ) : null}
       {mine.data?.subscriptions.length ? (
         <ul className="subs">
           {mine.data.subscriptions.map((s) => (
@@ -76,6 +92,7 @@ export function Subscribe({ areas, places, shown }: Props) {
           areas={areas}
           places={places}
           shown={shown}
+          followUrl={followUrl}
           onDone={(made) => {
             remember(made.id);
             setOpen(false);
@@ -105,11 +122,12 @@ type SignUpProps = {
   areas: string[];
   places: Place[];
   shown: string | null;
+  followUrl: string | null; // the Telegram bot, which follows the visitor's location
   onDone: (made: Subscription) => void;
   onCancel: () => void;
 };
 
-function SignUp({ areas, places, shown, onDone, onCancel }: SignUpProps) {
+function SignUp({ areas, places, shown, followUrl, onDone, onCancel }: SignUpProps) {
   // the saved places, then the area in the card, each ticked to start with
   const options = useMemo(() => {
     const out: Place[] = [...places];
@@ -169,13 +187,22 @@ function SignUp({ areas, places, shown, onDone, onCancel }: SignUpProps) {
               </label>
             </li>
           ))}
-          <li className="soon">
-            <label>
-              <input type="checkbox" disabled />
-              <span>Wherever I am, from my phone's location</span>
-            </label>
-            <span className="soon-tag">Coming soon</span>
-          </li>
+          {followUrl ? (
+            <li className="soon">
+              <span>Wherever I am, from my phone's location:</span>
+              <a href={followUrl} target="_blank" rel="noreferrer">
+                follow me on Telegram
+              </a>
+            </li>
+          ) : (
+            <li className="soon">
+              <label>
+                <input type="checkbox" disabled />
+                <span>Wherever I am, from my phone's location</span>
+              </label>
+              <span className="soon-tag">Coming soon</span>
+            </li>
+          )}
         </ul>
         <select
           aria-label="Add an area"

@@ -1,9 +1,10 @@
-# The AI/BI scoreboard for agencies (src/dashboards/scoreboard.lvdash.json): FloodSense against PUB's alerts and the
-# rainfall rule, flood by flood and area by area, with PUB's alert history and the flood-prone trend. It reads the
-# tables and views flood-scoreboard publishes in the ml schema (ml/publish.py); its queries name tables bare, and
-# dataset_catalog / dataset_schema point them there. Published with the deployer's credentials, so viewers need only
-# access to the dashboard. The app embeds it (the "For agencies" view), which needs the app's domain on the workspace's
-# approved embedding domains (Settings > Security > Embed dashboards; see "The app" in DEVELOPER_NOTES.md).
+# The AI/BI scoreboard for agencies (src/dashboards/scoreboard.lvdash.json): FloodSense's flash-flood warnings since
+# 20 Dec 2025, beside the rainfall rule, flood by flood and area by area, with PUB's alert history and the flood-prone
+# trend. It reads the tables and views flood-scoreboard publishes in the ml schema (ml/publish.py); its queries name
+# tables bare, and dataset_catalog / dataset_schema point them there. Published with the deployer's credentials, so
+# viewers need only access to the dashboard. The app embeds it (the "For agencies" view), which needs the app's domain
+# on the workspace's approved embedding domains (Settings > Security > Embed dashboards; see "The app" in
+# DEVELOPER_NOTES.md).
 resources:
   dashboards:
     agency_dashboard:

@@ -180,7 +180,7 @@ export function NowView() {
         {!warned.length ? (
           <aside className="invite">
             <p>
-              <strong>No storm right now?</strong> Replay a past storm to see how FloodSense warns ahead of PUB.
+              <strong>No storm right now?</strong>
             </p>
             <a className="button-link" href="#replay">
               Replay a storm
@@ -204,9 +204,7 @@ export function NowView() {
         />
         <figcaption>
           <MapLegend />
-          <span className="caption-note">
-            Each warning lasts an hour from FloodSense's rating. Select an area to see what to do there.
-          </span>
+          <span className="caption-note">Select an area to see what to do there.</span>
         </figcaption>
       </figure>
 

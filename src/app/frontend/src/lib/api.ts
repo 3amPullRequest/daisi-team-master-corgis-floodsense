@@ -48,13 +48,29 @@ export type Now = {
 
 export type Located = { query: string; place: string; lat: number; lon: number; area: string };
 
+/** How FloodSense did at one warning level since 20 Dec 2025 (ml.scoreboard): the flash floods PUB reported, those a
+ * warning was in force at, those it caught (warned 5 minutes to an hour ahead), the mean lead over the warned ones, and
+ * the share of its warnings a PUB alert or a flash flood followed. */
+export type LevelRecord = {
+  flash_floods: number;
+  floods_warned: number;
+  floods_caught: number;
+  floods_caught_share_lo: number | null;
+  floods_caught_share_hi: number | null;
+  flood_mean_lead_min: number | null;
+  warnings: number;
+  warnings_followed_by_alert: number | null;
+  warnings_followed_by_flood: number | null;
+};
+
 export type TrackRecord = {
   model: string;
   version: string;
   trained_at: number;
-  development: string | null;
-  rule: string | null;
-  metrics: Record<string, number>;
+  medium_p: number | null; // the tiers' cut-offs: chances of a PUB alert within the hour
+  high_p: number | null;
+  // the storms after the training data ended, as flood-scoreboard last published them; null before it has
+  test: { model: string; from: string; to: string; moderate: LevelRecord; elevated: LevelRecord | null } | null;
 };
 
 export type StormDay = { day: string; alerts: number; floods: number; areas: number; some_areas: string };
@@ -104,6 +120,9 @@ export type Subscription = {
   welcome: string | null; // "sent", or why not yet; null until flood-live's next run
   welcomed_at: string | null;
 };
+
+/** The Telegram bot that warns people wherever they are, by their live location; null when the app has none. */
+export type Follow = { bot: string | null; url: string | null };
 
 export type AreaFeature = {
   type: "Feature";

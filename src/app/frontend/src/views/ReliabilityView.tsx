@@ -5,127 +5,24 @@ import { getJson, useNow, type TrackRecord } from "../lib/api";
 import { ASK_QUESTIONS, PUB_CHANNEL } from "../lib/content";
 import { longDay, percent } from "../lib/format";
 
-const DAYS_PER_MONTH = 30.4;
-
-/** A share as people say it: "About 8 in 10", or "About 1 in 4" below a half. */
-function inWords(x: number | undefined): string {
-  if (!x) return "–";
-  return x >= 0.5 ? `About ${Math.round(x * 10)} in 10` : `About 1 in ${Math.round(1 / x)}`;
-}
-
-/** The time between false alarms in one area: weeks when they are rare, days when they are not. */
-function between(perAreaMonth: number | undefined): string {
-  if (!perAreaMonth) return "–";
-  const days = DAYS_PER_MONTH / perAreaMonth;
-  return days >= 14 ? `${Math.round(days / 7)} weeks` : `${Math.round(days)} days`;
+/** A share as people say it: "about 1 in 13", or "about 8 in 10" from a half up. */
+function inWords(x: number | null | undefined): string {
+  if (!x) return "none";
+  return x >= 0.5 ? `about ${Math.round(x * 10)} in 10` : `about 1 in ${Math.round(1 / x)}`;
 }
 
 export default function ReliabilityView() {
   const { data, error, mutate } = useSWR<TrackRecord>("/api/track-record", getJson, { revalidateOnFocus: false });
   const now = useNow();
-
-  if (error) {
-    return (
-      <div className="state state-error" role="alert">
-        <h1>The track record didn't load.</h1>
-        <p>{error.message}</p>
-        <button onClick={() => mutate()}>Try again</button>
-      </div>
-    );
-  }
-  if (!data) return <div className="skeleton skeleton-block" aria-busy="true" />;
-
-  const m = data.metrics;
-  const share = m.oof_alert_flagged_before_pub;
-  // The mean lead counts misses as 0; divided by the share warned, it is the lead when FloodSense did warn first. The
-  // scoreboard counts each rating as a warning for the hour after it (ml/scoreboard.py), as the replays do.
-  const leadWhenWarned = share ? m.oof_alert_mean_lead_min / share : undefined;
-  // the tiers as fixed chances (final_1) log High's cut-off, and Elevated alone is scored at about the rule's false alarms
-  const fixed = m.pair_high_p != null;
-  // flash floods one by one (oof_floods.json): the mean lead counts misses as 0, so per warned flood it is larger
-  const floodLead = m.oof_floods_warned ? (m.oof_floods_mean_lead_min * m.oof_floods_judged) / m.oof_floods_warned : undefined;
-  const [from, to] = (data.development ?? "").split(" to ");
   const tide = now.data?.tide;
+  // the tiers as fixed chances (final_1 on) log their cut-offs
+  const fixed = data?.medium_p != null && data?.high_p != null;
 
   return (
     <article className="reliability">
-      <h1 className="headline">How reliable is it?</h1>
-      <p className="headline-detail">
-        We tested FloodSense on {m.oof_alert_events} PUB alerts from {m.oof_alert_days} storm days
-        {from ? `, between ${longDay(from)} and ${longDay(to)}` : ""}. Each test used a version of FloodSense that had not
-        seen that storm.
-      </p>
-
-      <ul className="claims">
-        <li>
-          <p className="claim-number">{inWords(share)}</p>
-          <p>
-            PUB alerts had a FloodSense warning out before PUB's own. That is {percent(share)}. With so few storms, the
-            true share could be anywhere from {percent(m.oof_alert_flagged_before_pub_lo)} to{" "}
-            {percent(m.oof_alert_flagged_before_pub_hi)}.
-          </p>
-        </li>
-        <li>
-          <p className="claim-number">{leadWhenWarned ? `${Math.round(leadWhenWarned)} min` : "–"}</p>
-          <p>
-            earlier than PUB, on average, when FloodSense warned first. Each Moderate or Elevated rating is a warning
-            for the hour after it, and the head start runs from the warning's first rating.
-          </p>
-        </li>
-        {m.oof_floods_judged ? (
-          <li>
-            <p className="claim-number">
-              {m.oof_floods_warned} of {m.oof_floods_judged}
-            </p>
-            <p>
-              flash floods had a FloodSense warning out when they hit
-              {floodLead ? `, on average ${Math.round(floodLead)} min before` : ""}. For {m.oof_floods_warned_before_pub} of
-              them, the warning came before PUB's first alert of the storm.
-            </p>
-          </li>
-        ) : null}
-        <li>
-          <p className="claim-number">{between(m.oof_false_alarms_per_area_month)}</p>
-          <p>
-            between false alarms in a typical area. A false alarm is a Moderate or Elevated warning with no PUB alert
-            while it was in force. That is {m.oof_false_alarms_per_area_month?.toFixed(2)} false alarms per area per
-            month.
-          </p>
-        </li>
-        {m.oof_medium_warning_alert_share != null ? (
-          <li>
-            <p className="claim-number">{inWords(m.oof_medium_warning_alert_share)}</p>
-            <p>
-              warnings had a PUB alert while they were in force.
-              {m.oof_high_warning_alert_share != null
-                ? ` At Elevated, ${inWords(m.oof_high_warning_alert_share).toLowerCase()} did.`
-                : ""}
-            </p>
-          </li>
-        ) : null}
-      </ul>
-
-      <section className="compare">
-        <h2>Better than a simple rain alarm</h2>
-        <p>
-          A simple rule warns once heavy rain has fallen nearby. The rule warned early for{" "}
-          {percent(m.rule_dev_alert_flagged_before_pub)} of the same alerts, with{" "}
-          {m.rule_dev_false_alarms_per_area_month?.toFixed(2)} false alarms per area per month.
-          {fixed && m.oof_high_alert_flagged_before_pub != null
-            ? ` At Elevated alone, FloodSense raised about as many false alarms (${m.oof_high_false_alarms_per_area_month?.toFixed(2)} per area per month) and warned early for ${percent(m.oof_high_alert_flagged_before_pub)}.`
-            : ""}{" "}
-          FloodSense also reads NEA's 2-hour forecast and the tide, so it can warn before the rain arrives.
-        </p>
-        {m.without_tide_alert_flagged_only_with != null ? (
-          <p>
-            The tide helps. Adding it gained {m.without_tide_alert_flagged_only_with} early warnings and lost{" "}
-            {m.without_tide_alert_flagged_only_without}.
-          </p>
-        ) : null}
-      </section>
+      <h1 className="headline">How it works</h1>
 
       <section className="how">
-        <h2>How FloodSense works</h2>
         <ol className="steps">
           <li>
             <strong>Every 5 minutes, it reads open data.</strong> NEA's rain gauges, NEA's 2-hour forecast and the tide at
@@ -139,7 +36,7 @@ export default function ReliabilityView() {
             <strong>It rates each of NEA's 47 forecast areas for the next hour.</strong> Low, Moderate or Elevated, with
             the reason in plain words.
             {fixed
-              ? ` Moderate starts at a ${percent(m.pair_medium_p)} chance of a PUB alert within the hour, and Elevated at ${percent(m.pair_high_p)}.`
+              ? ` Moderate starts at a ${percent(data.medium_p)} chance of a PUB alert within the hour, and Elevated at ${percent(data.high_p)}.`
               : ""}
           </li>
         </ol>
@@ -169,17 +66,105 @@ export default function ReliabilityView() {
 
       <AskSection
         questions={ASK_QUESTIONS.reliability}
-        intro="Ask how FloodSense did, by area, by year or against the rainfall rule."
+        intro="Ask how FloodSense did since 20 Dec 2025: flood by flood, or area by area."
       />
 
+      <Record data={data} error={error} retry={() => mutate()} />
+
       <p>
-        Town councils and agencies can check every storm on the <a href="#agencies">scoreboard</a>.
+        Town councils and agencies can check every flash flood on the <a href="#agencies">scoreboard</a>.
       </p>
 
-      <p className="fine-print">
-        Model {data.model}, trained {longDay(new Date(data.trained_at).toISOString())}. The app reads these figures from
-        the model's MLflow run in Unity Catalog (alias @champion).
-      </p>
+      {data ? (
+        <p className="fine-print">
+          Model {data.model}, trained {longDay(new Date(data.trained_at).toISOString())}.
+          {data.test
+            ? ` The figures above are for ${data.test.model === data.model ? "it" : `model ${data.test.model}`}, from the scoreboard published for agencies in Unity Catalog.`
+            : ""}
+        </p>
+      ) : null}
     </article>
+  );
+}
+
+/** How reliable FloodSense has been on the storms after its training data ended. It loads on its own, so the rest of
+ * the page shows while it does, or if it fails. */
+function Record({ data, error, retry }: { data?: TrackRecord; error?: Error; retry: () => void }) {
+  if (error) {
+    return (
+      <section className="record" role="alert">
+        <h2>How reliable is it?</h2>
+        <p>The track record didn't load. {error.message}</p>
+        <button onClick={retry}>Try again</button>
+      </section>
+    );
+  }
+  if (!data) return <div className="skeleton skeleton-block" aria-busy="true" />;
+  const t = data.test;
+  if (!t) {
+    return (
+      <section className="record">
+        <h2>How reliable is it?</h2>
+        <p>Its scoreboard since 20 Dec 2025 hasn't been published yet.</p>
+      </section>
+    );
+  }
+  const m = t.moderate;
+  const e = t.elevated;
+  const lead = m.flood_mean_lead_min;
+  // a warning in force, but from under 5 minutes or over an hour before the flood
+  const outside = m.floods_warned - m.floods_caught;
+
+  return (
+    <section className="record" aria-labelledby="record-title">
+      <h2 id="record-title">How reliable is it?</h2>
+      <p>
+        Tested on the storms from {longDay(t.from)} to {longDay(t.to)}, after its training data ended: {m.flash_floods}{" "}
+        flash floods and {m.warnings} warnings.
+      </p>
+      <ul className="claims">
+        <li>
+          <p className="claim-number">
+            {m.floods_caught} of {m.flash_floods}
+          </p>
+          <p>
+            flash floods caught: a FloodSense warning came 5 minutes to an hour before each.
+            {outside > 0
+              ? ` A warning was in force at ${outside} more, but it came less than 5 minutes or more than an hour before the flood.`
+              : ""}
+            {m.floods_caught_share_lo != null && m.floods_caught_share_hi != null
+              ? ` With so few floods, the true share could be anywhere from ${percent(m.floods_caught_share_lo)} to ${percent(m.floods_caught_share_hi)}.`
+              : ""}
+          </p>
+        </li>
+        <li>
+          <p className="claim-number">{lead != null ? `${lead.toFixed(1)} min` : "–"}</p>
+          <p>
+            on average from FloodSense's warning to the flash flood, over the {m.floods_warned} floods a warning was in
+            force at. The warning starts at its first Moderate or Elevated rating.
+          </p>
+        </li>
+        <li>
+          <p className="claim-number">{percent(m.warnings_followed_by_alert, 1)}</p>
+          <p>
+            chance of a PUB alert, given a Moderate or Elevated warning: {inWords(m.warnings_followed_by_alert)} warnings
+            had one while in force.
+            {e?.warnings_followed_by_alert != null
+              ? ` At Elevated alone, ${percent(e.warnings_followed_by_alert, 1)}.`
+              : ""}
+          </p>
+        </li>
+        <li>
+          <p className="claim-number">{percent(m.warnings_followed_by_flood, 1)}</p>
+          <p>
+            chance of a flash flood, given a Moderate or Elevated warning: {inWords(m.warnings_followed_by_flood)}{" "}
+            warnings had one while in force.
+            {e?.warnings_followed_by_flood != null
+              ? ` At Elevated alone, ${percent(e.warnings_followed_by_flood, 1)}.`
+              : ""}
+          </p>
+        </li>
+      </ul>
+    </section>
   );
 }

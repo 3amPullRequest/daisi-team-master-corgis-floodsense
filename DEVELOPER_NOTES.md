@@ -260,7 +260,7 @@ DATABRICKS_CONFIG_PROFILE=flood_dev DATABRICKS_WAREHOUSE_ID=<warehouse id> FLOOD
 
 A replay's "warned N min ahead" now runs from the first rating of the warning in force at PUB's first alert. A rating at the same tick as PUB's alert no longer counts. Over the 92 area-days with a PUB alert from 20 Dec 2025 to 24 Oct 2026 (final_2), FloodSense warned first on 46. When it did, its head start averaged 18.6 min (median 15.5), against 14.0 min on 49 area-days by the old count (an unbroken run of warned ticks). Counting misses as 0, the average is 9.3 min (was 7.4). Per PUB event, as the scoreboard counts: 17.0 min on 29 of 60 after training, and 26.3 min on 144 of 323 out of fold.
 
-Every view but "For agencies" ends with **Ask a question** (`components/AskPanel.tsx`), the same Genie space with questions that fit the view (`ASK_QUESTIONS` in `lib/content.ts`, each checked on 26 Oct). The Now view also takes sign-ups for **warnings by email or text** (`components/Subscribe.tsx`, `/api/subscriptions`). They go to `<app schema>.warning_subscriptions`, a schema of its own because it holds personal data, and the app shows addresses back masked. Following the visitor's location is shown switched off, as coming soon.
+Every view but "For agencies" ends with **Ask a question** (`components/AskPanel.tsx`), the same Genie space with questions that fit the view (`ASK_QUESTIONS` in `lib/content.ts`, each checked on 26 Oct). The Now view also takes sign-ups for **warnings by email or text** (`components/Subscribe.tsx`, `/api/subscriptions`). They go to `<app schema>.warning_subscriptions`, a schema of its own because it holds personal data, and the app shows addresses back masked. Warnings wherever the visitor is go through the Telegram bot: the Now view links to it (`/api/follow`, variable `warning_bot`), or shows the option switched off, as coming soon, when the app has no bot. See [Warnings wherever you are](#warnings-wherever-you-are-the-telegram-bot).
 
 Replays read every feature the champion reads (`Champion.features`, from the model's own contract). Until 23 Oct they read a fixed list that left out the nearby and upwind rain and the weather, so a replay scored storms without the pair's second-strongest input. The track record shows the out-of-fold flash floods too (`oof_floods_*`), when the champion's run logged them.
 
@@ -300,6 +300,22 @@ Try the senders without a storm (it reads the secrets as your profile):
 ```bash
 uv run python -m daisi_team_master_corgis_floodsense.ml.broadcast --profile flood_dev --test-telegram --test-email you@example.com
 ```
+
+### Warnings wherever you are: the Telegram bot
+
+A web page can't follow a phone once it's closed, so the bot does (`ml/follow.py`). The Now view's **Follow me on Telegram** opens `t.me/<warning_bot>?start=follow`. The person taps Start and shares their live location (📎, Location, Share My Live Location), or sends a pin to follow one place. Telegram sends each new position as an edit of that message.
+
+Nothing outside can reach `flood-live`, so the bot fetches its own messages. After `broadcast.run`, each run's score task reads what Telegram kept since the last run (`getUpdates`, kept 24 hours), answers it, and confirms it. So the bot answers within one run, and only while `flood-live` runs: unpause it after each dev deploy.
+
+- **Only the area is kept.** `<app schema>.telegram_followers` holds each chat's forecast area, never coordinates. The area is the one the app's map draws the position in (`public/areas.geojson`, clipped to land). A phone in Johor or out at sea is in none, and is told so.
+- **When it writes.** A follower hears when a warning starts, steps up or steps down in their area, or when they move into an area under a warning they haven't heard about. It says nothing while a warning holds or lapses, or for a tick more than 20 minutes old. `/status` says what it follows; `/stop`, the end of the live location, or blocking the bot stops it.
+- **One deployment reads the bot.** Telegram hands each message to whichever caller confirms it first, so two deployments reading one bot would split its followers. `follow_telegram` is `"false"` unless set, and exactly one deployment sets it, in `.databricks/bundle/dev/variable-overrides.json`:
+
+    ```json
+    { "follow_telegram": "true" }
+    ```
+
+- **No webhook.** `getUpdates` fails while the bot has one. The bot is the same as the channel's (`telegram-bot-token`), so nothing else needs setting up.
 
 ### For agencies: the scoreboard and Genie
 
@@ -722,7 +738,7 @@ Timestamps are instants (`TIMESTAMP`); set `spark.sql.session.timeZone` to `Asia
 
 - **Auto CDC compares the `sequence_by` types of all flows into a table, nullability included.** The API's `fetched_at` comes out of the payload (nullable) and the CSV's file time can't be null, so the API side falls back to the file time.
 - **ANSI mode is on in serverless pipelines:** `map[key]` and `array[0]` throw on a missing key or an empty array, and a bad `CAST` fails the update. Use `try_element_at`, `get` and `try_cast`.
-- **UDFs and `src/`:** the executors can't import the floodsense package, so `utilities/silver.py` registers its modules with cloudpickle by value. Only functions of those modules may be UDFs; a function defined in `utilities/` would be pickled by reference and fail on the executors.
+- **UDFs and `src/`:** the executors can't import the floodsense package, so `utilities/silver.py` registers its modules with cloudpickle by value. Only functions of those modules may be UDFs; a function defined in `utilities/` would be pickled by reference and fail on the executors. Those modules also import each other's names, not each other (`from .alert_text import Parsed`, not `from . import alert_text as T`): a module object is pickled whole, its `__loader__` and `__spec__` with it, and on Databricks those belong to dbruntime, so the executors fail with `No module named 'dbruntime'` (1 Nov: `read_jev` in silver.telegram_posts). `tests/test_silver_udfs.py` checks each UDF.
 - **OneMap search** answers without a token, but with only its top result, an `error` asking for a token, and about one search per 10 s (faster ones get HTTP 429). With a free account and token it allows 250 a minute, and returns every result, which would also let a junction be placed where its two roads meet.
 - **OneMap's top hit isn't always the place searched:** "Kings Rd" gives Kings Home on Joo Chiat Road, "Bukit Timah Rd" an expressway gantry. An answer counts only when its road, name or building is named like the query.
 - **The API's text isn't the post's:** the same flood is "Boon Lay Avenue" in the API and "Boon Lay Ave (Between Jalan Boon Lay and Boon Lay Drive)" on Telegram, so an API alert is matched to a post by kind, time and a loose name match, not by text or by area alone (two floods 9 minutes apart in Bedok on 12 Dec 2025).

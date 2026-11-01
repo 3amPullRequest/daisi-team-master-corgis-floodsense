@@ -1,7 +1,6 @@
-"""publish: the scoreboard tables the agencies' dashboard and Genie space read, from scoreboards and the training run."""
+"""publish: the scoreboard tables the agencies' dashboard, the Genie space and the app read, over the test period."""
 
 import math
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -9,7 +8,6 @@ import pytest
 
 from daisi_team_master_corgis_floodsense.ml import contract as C
 from daisi_team_master_corgis_floodsense.ml import floods, publish
-from daisi_team_master_corgis_floodsense.ml.scoreboard import score
 
 DAY = pd.Timestamp("2026-02-18")
 WINDOW = {"start": DAY, "end": DAY + pd.Timedelta(days=1), "missing": None, "blind": None}
@@ -30,17 +28,15 @@ def predictions(area: str, p_by_tick: dict[str, float], medium: float = 0.03, hi
 
 
 def alerts(*rows: tuple[str, str, str]) -> pd.DataFrame:
-    return pd.DataFrame([(area, at(hhmm), kind) for area, hhmm, kind in rows], columns=["area", "alert_ts", "kind"])
+    return pd.DataFrame(
+        [(area, at(hhmm), kind, f"{area} Road") for area, hhmm, kind in rows],
+        columns=["area", "alert_ts", "kind", "location"],
+    )
 
 
-def as_logged(frame: pd.DataFrame) -> pd.DataFrame:
-    """A table as mlflow.log_table keeps it and verify._artifact_table reads it back: timestamps as text, NaT too."""
-    return frame.apply(lambda col: col.astype(str) if pd.api.types.is_datetime64_any_dtype(col) else col)
-
-
-# Bedok: PUB's warning at 14:25 and a flash flood at 14:40. FloodSense rises from 14:00 and is Elevated at 14:10; the
-# rule fires at 14:30, after PUB. In Tampines FloodSense warns at 09:00 and nothing follows: a false alarm.
-PUB = alerts(("Bedok", "14:25", C.WARNING), ("Bedok", "14:40", C.FLASH_FLOOD))
+# Bedok: PUB's warning at 14:25 and flash floods at 14:40 and 15:05. FloodSense rises from 14:00 (in force until 15:20)
+# and is Elevated at 14:10 only; the rule fires at 14:30. In Tampines FloodSense warns at 09:00 and nothing follows.
+PUB = alerts(("Bedok", "14:25", C.WARNING), ("Bedok", "14:40", C.FLASH_FLOOD), ("Bedok", "15:05", C.FLASH_FLOOD))
 OURS = pd.concat(
     [
         predictions("Bedok", {"14:00": 0.035, "14:05": 0.04, "14:10": 0.06, "14:15": 0.045, "14:20": 0.04}),
@@ -53,65 +49,98 @@ RULES = pd.concat(
 ).assign(p_alert=np.nan)
 
 
-def test_after_training_tables_score_floodsense_at_both_levels_and_the_rule_on_the_same_storms():
+def tables():
     keys = publish.flood_hours(PUB, WINDOW["start"], WINDOW["end"])
-    tables = publish.after_training_tables(
+    return publish.after_training_tables(
         publish.kept(OURS, keys), publish.kept(RULES, keys), PUB, WINDOW, "final_2", "15-minute rain"
     )
-    board = tables["scoreboard"].set_index(["model", "warning_level"])
+
+
+def test_the_scoreboard_scores_floodsense_at_both_levels_and_the_rule_on_the_same_floods():
+    board = tables()["scoreboard"].set_index(["model", "warning_level"])
     assert list(board.index) == [
         (publish.FLOODSENSE, publish.MODERATE),
         (publish.FLOODSENSE, publish.ELEVATED),
         (publish.RULE, publish.HEAVY_RAIN),
     ]
-    assert set(tables["scoreboard"]["period"]) == {publish.AFTER_TRAINING}
+    assert set(board["period"]) == {publish.AFTER_TRAINING}
     ours = board.loc[(publish.FLOODSENSE, publish.MODERATE)]
-    assert ours["pub_alert_events"] == 1 and ours["alerts_warned_before_pub"] == 1.0
-    assert ours["alert_mean_lead_min"] == 25  # 14:00 to PUB's 14:25
-    assert ours["flash_floods"] == 1 and ours["flood_mean_lead_min"] == 40
-    assert ours["pub_flood_warning_min"] == 15  # PUB's own warning: 14:25 to 14:40
-    assert ours["warnings"] == 2 and ours["warnings_followed_by_alert"] == 0.5  # Bedok's came true, Tampines' didn't
+    assert ours["flash_floods"] == 2 and ours["floods_warned"] == 2
+    # 14:40 came 40 minutes after the warning began; 15:05, 65 minutes after: past the hour its first rating warned of
+    assert ours["floods_caught"] == 1 and ours["floods_caught_share"] == 0.5
+    assert ours["flood_mean_lead_min"] == pytest.approx((40 + 65) / 2)  # over the floods a warning was in force at
+    assert ours["warnings"] == 2  # Bedok's came true, Tampines' didn't
+    assert ours["warnings_followed_by_alert"] == 0.5 and ours["warnings_followed_by_flood"] == 0.5
+    assert ours["warnings_followed_by_alert_lo"] < 0.5 < ours["warnings_followed_by_alert_hi"]
     assert ours["period_start"] == DAY.date() and ours["period_end"] == DAY.date()
     elevated = board.loc[(publish.FLOODSENSE, publish.ELEVATED)]
-    assert elevated["alert_mean_lead_min"] == 15 and elevated["warnings"] == 1  # 14:10 only, never in Tampines
+    # 14:10 only, in force until 15:10: 30 and 55 minutes ahead, both caught; never in Tampines
+    assert elevated["floods_caught"] == 2 and elevated["flood_mean_lead_min"] == pytest.approx(42.5)
+    assert elevated["warnings"] == 1 and elevated["warnings_followed_by_flood"] == 1.0
     rule = board.loc[(publish.RULE, publish.HEAVY_RAIN)]
-    assert rule["alerts_warned_before_pub"] == 0.0 and rule["model_version"] == "15-minute rain"
+    assert rule["floods_caught"] == 2 and rule["flood_mean_lead_min"] == pytest.approx((10 + 35) / 2)
+    assert rule["model_version"] == "15-minute rain"
+    assert set(board.reset_index().columns) == set(publish.SCOREBOARD_COLUMNS)
 
 
-def test_after_training_floods_put_floodsense_and_the_rule_side_by_side_in_the_app_s_tier_names():
-    keys = publish.flood_hours(PUB, WINDOW["start"], WINDOW["end"])
-    row = publish.after_training_tables(
-        publish.kept(OURS, keys), publish.kept(RULES, keys), PUB, WINDOW, "final_2", "rule"
-    )["scoreboard_floods"].iloc[0]
-    assert row["flood_time"] == at("14:40") and row["pub_first_alert"] == at("14:25")
-    assert row["floodsense_lead_min"] == 40 and row["floodsense_before_pub"]
-    assert row["floodsense_peak_tier"] == "Elevated" and row["floodsense_peak_chance"] == pytest.approx(0.06)
-    assert row["floodsense_tier_at_flood"] == "Low"  # 14:35: the warning was in force, but the chance had fallen
-    assert row["rule_lead_min"] == 10 and not row["rule_before_pub"]
-    assert row["scored_by"] == "final_2" and row["period"] == publish.AFTER_TRAINING
+def test_floods_put_floodsense_and_the_rule_side_by_side_one_row_per_report():
+    floods_table = tables()["scoreboard_floods"]
+    assert list(floods_table["flood_time"]) == [at("14:40"), at("15:05")]
+    first, second = floods_table.iloc[0], floods_table.iloc[1]
+    assert first["floodsense_warned_from"] == at("14:00") and first["floodsense_lead_min"] == 40
+    assert first["floodsense_caught"] and not second["floodsense_caught"] and second["floodsense_lead_min"] == 65
+    assert first["floodsense_peak_tier"] == "Elevated" and first["floodsense_peak_chance"] == pytest.approx(0.06)
+    assert first["floodsense_tier_at_flood"] == "Low"  # 14:35: the warning was in force, but the chance had fallen
+    assert first["rule_lead_min"] == 10 and first["rule_caught"] and second["rule_lead_min"] == 35
+    assert first["location"] == "Bedok Road" and first["judged"]
+    assert first["scored_by"] == "final_2" and first["period"] == publish.AFTER_TRAINING
+    assert list(floods_table.columns) == list(publish.FLOODS_COLUMNS)
 
 
-def test_after_training_events_and_warnings_carry_who_warned_at_which_level():
-    keys = publish.flood_hours(PUB, WINDOW["start"], WINDOW["end"])
-    tables = publish.after_training_tables(
-        publish.kept(OURS, keys), publish.kept(RULES, keys), PUB, WINDOW, "final_2", "rule"
-    )
-    events = tables["scoreboard_events"]
-    assert set(events["event_kind"]) == {"pub_alert", "flash_flood"}
-    assert len(events) == 6  # one alert event and one flood, for each of the three rows
-    warnings = tables["scoreboard_warnings"]
+def test_warnings_carry_whether_a_pub_alert_or_a_flash_flood_followed():
+    warnings = tables()["scoreboard_warnings"]
     ours = warnings[warnings["warning_level"] == publish.MODERATE].set_index("area")
-    assert ours.loc["Tampines", "false_alarm"] and not ours.loc["Bedok", "false_alarm"]
+    assert ours.loc["Tampines", "false_alarm"] and not ours.loc["Tampines", "followed_by_flash_flood"]
+    assert ours.loc["Bedok", "followed_by_pub_alert"] and ours.loc["Bedok", "followed_by_flash_flood"]
     assert ours.loc["Bedok", "warning_start"] == at("14:00")
     assert ours.loc["Bedok", "in_force_until"] == at("15:20")  # an hour after its last warned tick
     assert ours.loc["Bedok", "hours_in_force"] == pytest.approx(80 / 60)
+    assert set(warnings.columns) == set(publish.WARNINGS_COLUMNS)
+
+
+def test_a_warning_a_drain_alert_alone_followed_is_no_flood_warning():
+    pub = alerts(("Bedok", "14:25", C.WARNING))
+    rows = publish.warning_rows(
+        publish.score(OURS[OURS["tier"] != "Low"], pub, **WINDOW).episodes, pub
+    ).set_index("area")
+    assert rows.loc["Bedok", "followed_by_pub_alert"] and not rows.loc["Bedok", "followed_by_flash_flood"]
+
+
+def test_a_share_s_interval_never_shows_below_zero():
+    warnings = pd.DataFrame(
+        {"judged": [True] * 3, "followed_by_pub_alert": [False] * 3, "followed_by_flash_flood": [False] * 3}
+    )
+    reports = floods.report_table(predictions("Bedok", {}), PUB, start=WINDOW["start"], end=WINDOW["end"])
+    row = publish.summary_row(warnings, reports)
+    assert row["warnings_followed_by_flood"] == 0.0 and row["warnings_followed_by_flood_lo"] == 0.0
+    assert row["floods_caught_share_lo"] == 0.0 and row["floods_caught"] == 0
+    assert math.isnan(row["flood_mean_lead_min"])  # no flood had a warning in force: no lead, not 0
+
+
+def test_floodsense_and_the_rule_must_be_scored_over_the_same_floods():
+    span = {"start": WINDOW["start"], "end": WINDOW["end"]}
+    ours = floods.report_table(OURS, PUB, **span)
+    theirs = floods.report_table(RULES, PUB[PUB["alert_ts"] < at("15:00")], **span)
+    with pytest.raises(ValueError):
+        publish.flood_rows(ours, theirs, "final_2")
 
 
 def test_kept_holds_the_warned_ticks_and_the_hour_before_each_flood_only():
-    # Bedok warned at 12:00, long before its flood; Tampines neither warned nor flooded
+    # Bedok warned at 12:00, long before its floods; Tampines neither warned nor flooded
     preds = pd.concat([predictions("Bedok", {"12:00": 0.04}), predictions("Tampines", {})], ignore_index=True)
     rows = publish.kept(preds, publish.flood_hours(PUB, WINDOW["start"], WINDOW["end"]))
-    assert set(rows["ts"]) == set(floods.hour_before(at("14:40"))) | {at("12:00")}  # 13:40 to 14:35, Low included
+    hours = set(floods.hour_before(at("14:40"))) | set(floods.hour_before(at("15:05")))  # 13:40 to 15:00
+    assert set(rows["ts"]) == hours | {at("12:00")}
     assert set(rows["area"]) == {"Bedok"}
     assert list(rows.columns) == ["area", "ts", "tier", "p_alert"]
 
@@ -120,67 +149,6 @@ def test_flood_hours_skip_floods_outside_the_window():
     keys = publish.flood_hours(PUB, DAY + pd.Timedelta(days=1), DAY + pd.Timedelta(days=2))
     assert len(keys) == 0
     assert publish.kept(OURS, keys)["tier"].ne("Low").all()
-
-
-def test_a_share_s_interval_never_shows_below_zero():
-    row = publish.summary_row({"flood_flagged_before_pub_lo": -2.78e-17, "alert_flagged_before_pub_hi": 1.0000001})
-    assert row["floods_warned_before_pub_lo"] == 0.0 and row["alerts_warned_before_pub_hi"] == 1.0
-    assert math.isnan(row["floods_warned_before_pub"])
-
-
-def test_development_rows_are_the_training_run_s_metrics_under_each_prefix():
-    metrics = {
-        "oof_alert_events": 323.0,
-        "oof_alert_flagged_before_pub": 0.4458,
-        "oof_alert_flagged_before_pub_lo": 0.3926,
-        "oof_alert_mean_warning_min_lo": 9.1,
-        "oof_flood_mean_pub_warning_min": 20.78,
-        "oof_false_alarms_per_area_month": 1.772,
-        "oof_medium_warning_alert_share": 0.054,
-        "oof_high_alert_flagged_before_pub": 0.2941,
-        "oof_high_warning_alert_share": 0.075,
-        "rule_dev_alert_flagged_before_pub": 0.1827,
-        "rule_dev_warnings": 1560.0,
-    }
-    rows = publish.development_summary(metrics, "final_2", "rule", date(2021, 10, 27), date(2025, 12, 19))
-    rows = rows.set_index("warning_level")
-    ours, high, rule = rows.loc[publish.MODERATE], rows.loc[publish.ELEVATED], rows.loc[publish.HEAVY_RAIN]
-    assert ours["pub_alert_events"] == 323 and ours["alerts_warned_before_pub_lo"] == 0.3926
-    assert ours["alert_mean_lead_min_lo"] == 9.1  # an alert event's warning is its lead
-    assert ours["pub_flood_warning_min"] == 20.78 and ours["warnings_followed_by_alert"] == 0.054
-    assert high["alerts_warned_before_pub"] == 0.2941 and high["warnings_followed_by_alert"] == 0.075
-    assert rule["warnings"] == 1560 and rule["model_version"] == "rule"
-    assert math.isnan(rule["warnings_followed_by_alert"])  # the training run doesn't log it for the rule
-    assert math.isnan(rule["pub_alert_events"])  # not logged: missing, not zero
-    assert set(rows["period"]) == {publish.DEVELOPMENT}
-
-
-def test_development_floods_read_back_from_mlflow_tables_with_the_rule_from_the_verify_run():
-    ours = floods.flood_table(OURS, PUB, **WINDOW)
-    verify = as_logged(
-        ours[["area", "flood_ts"]].assign(lead_min_rule=10.0, before_pub_rule=False, lead_min=99.0)
-    )
-    events = as_logged(score(OURS[OURS["tier"] != "Low"], PUB, **WINDOW).events)
-    tables = publish.development_tables(
-        {}, events, as_logged(ours), verify, "final_2", "rule", date(2021, 10, 27), date(2025, 12, 19)
-    )
-    row = tables["scoreboard_floods"].iloc[0]
-    assert row["flood_time"] == at("14:40") and row["floodsense_warned_from"] == at("14:00")
-    assert row["floodsense_lead_min"] == 40  # FloodSense's out-of-fold lead, not verify's in-sample one
-    assert row["rule_lead_min"] == 10 and not row["rule_before_pub"]
-    assert row["scored_by"] == publish.OUT_OF_FOLD and row["period"] == publish.DEVELOPMENT
-    events = tables["scoreboard_events"]
-    missed = events[events["warned_from"].isna()]
-    assert missed.empty and set(events["model"]) == {publish.FLOODSENSE}
-    assert events["event_time"].dtype == "datetime64[ns]"
-
-
-def test_a_flood_no_warning_was_in_force_at_reads_back_as_null_not_text():
-    table = floods.flood_table(predictions("Bedok", {}), PUB, **WINDOW)
-    row = publish.flood_rows(as_logged(table), None, publish.DEVELOPMENT, publish.OUT_OF_FOLD).iloc[0]
-    assert pd.isna(row["floodsense_warned_from"]) and math.isnan(row["floodsense_lead_min"])
-    assert row["public_warning_min"] == 15  # PUB's own warning still reached the public
-    assert math.isnan(row["rule_lead_min"]) and row["rule_before_pub"] is None
 
 
 def test_month_spans_cover_the_window_without_gaps_and_cut_at_month_starts():
@@ -197,4 +165,4 @@ def test_every_table_lists_its_columns_with_a_type_and_a_comment():
         for name, (kind, doc) in columns.items():
             assert kind in {"STRING", "DATE", "BIGINT", "DOUBLE", "BOOLEAN", "TIMESTAMP_NTZ"}, name
             assert doc, name
-    assert set(publish.SUMMARY.values()) <= set(publish.SCOREBOARD_COLUMNS)
+    assert not set(publish.DROPPED) & set(publish.TABLES)

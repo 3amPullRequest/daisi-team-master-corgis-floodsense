@@ -16,7 +16,8 @@ row and is Low, as in training. Its rows in ml.predictions carry the name the us
 (final_1), else "<model> v<version>" (contract.version_name).
 
 Then broadcast.run sends the warnings that are news at the newest tick: a post to the Telegram channel, and emails and
-texts to the app's subscribers. A failure there is logged and never fails the scoring.
+texts to the app's subscribers. follow.run then answers the people who wrote to the Telegram bot, and tells each
+follower the warning where they are. A failure in either is logged and never fails the scoring.
 """
 
 from __future__ import annotations
@@ -243,13 +244,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _broadcast(spark, args, model: str, tick, now: pd.Timestamp) -> None:
-    """Send the warnings that are news at `tick` (broadcast.py); the scores are already written, so any error is only
-    logged."""
-    from . import broadcast
+    """Send the warnings that are news at `tick` (broadcast.py), then answer the Telegram bot's followers and tell them
+    the warnings where they are (follow.py); the scores are already written, so any error is only logged."""
+    from . import broadcast, follow
 
+    app = f"{args.catalog}.{args.app_schema}" if args.app_schema else None
     try:
         senders = broadcast.Senders.from_scope(args.secret_scope, args.warning_channel)
-        app = f"{args.catalog}.{args.app_schema}" if args.app_schema else None
         sent = broadcast.run(
             spark,
             ml=f"{args.catalog}.{args.ml_schema}",
@@ -262,6 +263,22 @@ def _broadcast(spark, args, model: str, tick, now: pd.Timestamp) -> None:
         log.info("broadcast: %s", json.dumps(sent, default=str))
     except Exception:  # noqa: BLE001 - never fail a run whose scores are written
         log.exception("broadcast failed; the scores are written")
+        return
+    if args.follow_telegram != "true" or app is None or senders.telegram is None:
+        return
+    try:
+        followed = follow.run(
+            spark,
+            app=app,
+            ml=f"{args.catalog}.{args.ml_schema}",
+            model=model,
+            tick=tick,
+            now=now,
+            bot=senders.telegram,
+        )
+        log.info("telegram followers: %s", json.dumps(followed, default=str))
+    except Exception:  # noqa: BLE001 - never fail a run whose scores are written
+        log.exception("following on Telegram failed; the scores are written")
 
 
 def _epoch(ts: pd.Timestamp) -> int:
@@ -298,6 +315,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--app-schema",
         help="schema with the app's warning subscriptions; none: no emails or texts",
+    )
+    parser.add_argument(
+        "--follow-telegram",
+        choices=("true", "false"),
+        default="false",
+        help="read the bot's messages and follow people's Telegram locations (follow.py); only one deployment per "
+        "bot may, so it is off unless asked for",
     )
     return parser
 

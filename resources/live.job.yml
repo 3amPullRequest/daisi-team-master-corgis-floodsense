@@ -1,8 +1,10 @@
 # The live loop, every ${var.live_schedule}: fetch the newest pages, stream them through bronze and silver, score the
 # newest ticks for all 47 areas into ml.predictions (ml/live.py), then post each new or changed warning to the Telegram
 # channel ${var.warning_channel} and send it to the app's subscribers by email or text (ml/broadcast.py; credentials in
-# the secret scope). A new Telegram post no pattern reads is read by a foundation model in Jev's place (labels/jev.py
-# FOUNDATION_MODEL; --fallback-model picks another, or Jev) and emailed to ${var.parser_alert_to} (ingest/fallback.py).
+# the secret scope). With follow_telegram, it then answers the people who follow the bot @${var.warning_bot}, telling
+# each the warning where their live location is (ml/follow.py). A new Telegram post no pattern reads is read by a
+# foundation model in Jev's place (labels/jev.py FOUNDATION_MODEL; --fallback-model picks another, or Jev) and emailed
+# to ${var.parser_alert_to} (ingest/fallback.py).
 # A run that would overlap the previous one is skipped, and the next one catches up: fetch reads
 # the newest 25 records of each source, score every tick since its last.
 # flood-watchdog (watchdog.job.yml) emails when any of this goes stale.
@@ -68,6 +70,8 @@ resources:
               - ${var.warning_channel}
               - --app-schema
               - ${resources.schemas.app.name}
+              - --follow-telegram   # read the bot's private messages: one deployment per bot (ml/follow.py)
+              - ${var.follow_telegram}
       environments:
         - environment_key: default
           spec:

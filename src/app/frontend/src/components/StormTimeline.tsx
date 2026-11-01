@@ -5,8 +5,9 @@ import { clock, duration } from "../lib/format";
 const CODE: Record<string, Tier> = { M: "Medium", H: "High" };
 const TICK_MS = 5 * 60_000;
 
-/** One area PUB alerted that day: its first alert, and since when FloodSense's warning had been in force, if it was. */
-export type LeadRow = { area: string; firstAlert: string; floods: number; warnedFrom: string | null; leadMin: number | null };
+/** One area PUB alerted that day: its first flash flood, if it had one, and since when FloodSense's warning had been in
+ * force when it struck, if one was. */
+export type LeadRow = { area: string; flood: string | null; warnedFrom: string | null; leadMin: number | null };
 
 type Props = {
   replay: Replay;
@@ -31,8 +32,8 @@ function runs(codes: string, from: number, to: number) {
 }
 
 /** Each alerted area as a row in time: FloodSense's warnings in force as bars (each rating warns for the hour after
- * it), PUB's alerts as dots, and the replay's clock as a line. The gap between a bar's start and the first dot is the
- * warning FloodSense gave. */
+ * it), PUB's alerts as dots, and the replay's clock as a line. The gap between a bar's start and a flash flood's dot is
+ * the warning FloodSense gave before it. */
 export function StormTimeline({ replay, warnings, rows, at, from, to, onSeek }: Props) {
   const t0 = new Date(replay.ticks[0]).getTime();
   const span = Math.max(to + 1 - from, 1);
@@ -74,7 +75,13 @@ export function StormTimeline({ replay, warnings, rows, at, from, to, onSeek }: 
           <div className="tl-row" key={r.area}>
             <p className="tl-label">
               <strong>{r.area}</strong>
-              <span>{r.leadMin != null ? `Warned ${duration(r.leadMin)} ahead` : "No early warning"}</span>
+              <span>
+                {r.flood == null
+                  ? "No flash flood"
+                  : r.leadMin != null
+                    ? `Warned ${duration(r.leadMin)} before the flood`
+                    : "No warning before the flood"}
+              </span>
             </p>
             <div
               className="tl-track"

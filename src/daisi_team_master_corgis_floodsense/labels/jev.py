@@ -36,7 +36,28 @@ import json
 import re
 from dataclasses import dataclass, replace
 
-from . import alert_text as T
+# Its names, not the module: silver's read_jev UDF ships this module's code by value, and a module object would be
+# pickled whole, __loader__ included, which on Databricks belongs to dbruntime and won't unpickle on the executors.
+from .alert_text import (
+    _STAMP,
+    FLASH_FLOOD,
+    FLOOD_SUBSIDED,
+    HEAVY_RAIN,
+    HEAVY_RAIN_EASED,
+    NO_LOCATION,
+    NOT_RELEVANT,
+    UNMATCHED,
+    WARNING,
+    Located,
+    Parsed,
+    _alert,
+    _clean,
+    _eased,
+    _heavy_rain,
+    _stamp,
+    as_row,
+    normalize,
+)
 
 MODEL = "system.ai.typesafeai-jev-1-14-0"
 PATH = "/ai-gateway/typesafe/v1/systemone"
@@ -60,13 +81,13 @@ CATEGORY_QUESTION = {
     "type": "choice",
     "instructions": "Which kind of post from PUB, Singapore's national water agency, is this?",
     "criteria": {
-        T.WARNING: "Risk of flash floods: water in drains or canals has risen high (for example to 90%) at named "
+        WARNING: "Risk of flash floods: water in drains or canals has risen high (for example to 90%) at named "
         "places, and people should avoid them for the next hour.",
-        T.FLASH_FLOOD: "A flash flood has occurred, or is happening now, at named places.",
-        T.FLOOD_SUBSIDED: "A flash flood at a named place has subsided or ended.",
-        T.HEAVY_RAIN: "NEA expects heavy rain over areas of Singapore during a time window.",
-        T.HEAVY_RAIN_EASED: "NEA says the heavy rain has eased.",
-        T.NOT_RELEVANT: "Anything else: announcements, advisories, tips, scam warnings, channel messages.",
+        FLASH_FLOOD: "A flash flood has occurred, or is happening now, at named places.",
+        FLOOD_SUBSIDED: "A flash flood at a named place has subsided or ended.",
+        HEAVY_RAIN: "NEA expects heavy rain over areas of Singapore during a time window.",
+        HEAVY_RAIN_EASED: "NEA says the heavy rain has eased.",
+        NOT_RELEVANT: "Anything else: announcements, advisories, tips, scam warnings, channel messages.",
     },
 }
 
@@ -102,15 +123,15 @@ def text_sha256(text: str | None) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
-def needs_fallback(parsed: T.Parsed) -> bool:
+def needs_fallback(parsed: Parsed) -> bool:
     """A post the patterns can't read: no format matched, or one did but its reader found no place."""
-    return parsed.category == T.UNMATCHED or parsed.problem == T.NO_LOCATION
+    return parsed.category == UNMATCHED or parsed.problem == NO_LOCATION
 
 
 def _pieces(text: str) -> list[tuple[int, int]]:
     """Spans between separators and stamps."""
     cuts = sorted(
-        [(m.start(), m.end()) for m in T._STAMP.finditer(text)]
+        [(m.start(), m.end()) for m in _STAMP.finditer(text)]
         + [(m.start(), m.end()) for m in _SEPARATOR.finditer(text)]
     )
     spans, pos = [], 0
@@ -126,7 +147,7 @@ def _trimmed(text: str, start: int, end: int) -> Candidate | None:
     """The span without hashtags, and without the spaces, punctuation and symbols (bullets of any kind, emoji) at its
     ends, if it could name a place."""
     piece = text[start:end]
-    cleaned = _EDGES.sub("", T._clean(piece))
+    cleaned = _EDGES.sub("", _clean(piece))
     letters = sum(c.isalpha() for c in cleaned)
     if letters < 3 or len(cleaned) > 120 or _NOT_PLACE.match(cleaned):
         return None
@@ -137,7 +158,7 @@ def _trimmed(text: str, start: int, end: int) -> Candidate | None:
 
 def candidates(text: str | None) -> list[Candidate]:
     """The phrases of a post that could be a place, in the order they appear, at most MAX_CANDIDATES."""
-    text = T.normalize(text)
+    text = normalize(text)
     found: dict[str, Candidate] = {}
     for start, end in _pieces(text):
         piece = text[start:end]
@@ -182,7 +203,7 @@ def request(text: str | None, found: list[Candidate], model: str = MODEL) -> dic
         "model": model,
         "state": {
             "channel": "PUB Flood Alerts (Singapore) on Telegram",
-            "post": T.normalize(text),
+            "post": normalize(text),
         },
         "questions": questions,
     }
@@ -305,7 +326,7 @@ def answers_from_chat(content: str | None, questions: dict) -> dict:
 
 
 def _stamps(text: str) -> list[tuple[int, str]]:
-    return [(m.start(), T._stamp(m)) for m in T._STAMP.finditer(text)]
+    return [(m.start(), _stamp(m)) for m in _STAMP.finditer(text)]
 
 
 def _places(found: list[Candidate], answers: dict) -> list[tuple[Candidate, float]]:
@@ -322,7 +343,7 @@ def _places(found: list[Candidate], answers: dict) -> list[tuple[Candidate, floa
     return sorted(kept, key=lambda cp: cp[0].start)
 
 
-def _timed(text: str, places: list[Candidate]) -> list[T.Located]:
+def _timed(text: str, places: list[Candidate]) -> list[Located]:
     """Each place with the first stamp after it and before the next place; one stamp in the post times them all."""
     stamps = _stamps(text)
     distinct = {s for _, s in stamps}
@@ -335,25 +356,25 @@ def _timed(text: str, places: list[Candidate]) -> list[T.Located]:
             if after
             else (next(iter(distinct)) if len(distinct) == 1 else None)
         )
-        located.append(T.Located(place.text, stamp))
+        located.append(Located(place.text, stamp))
     return located
 
 
-def read(text: str | None, found: list[Candidate], answers: dict) -> T.Parsed:
+def read(text: str | None, found: list[Candidate], answers: dict) -> Parsed:
     """Jev's answers as a Parsed (pattern 'jev'), with the thresholds above."""
-    text = T.normalize(text)
+    text = normalize(text)
     category = answers.get("category") or {}
     choice, confidence = category.get("choice"), category.get("confidence") or 0.0
     if choice not in CATEGORY_QUESTION["criteria"] or confidence < CATEGORY_MIN:
-        return T.Parsed(T.UNMATCHED, hint=choice)
-    if choice == T.HEAVY_RAIN:
-        return replace(T._heavy_rain(text), pattern=PATTERN)
-    if choice == T.HEAVY_RAIN_EASED:
-        return replace(T._eased(text), pattern=PATTERN)
-    if choice == T.NOT_RELEVANT:
-        return T.Parsed(T.NOT_RELEVANT, PATTERN)
+        return Parsed(UNMATCHED, hint=choice)
+    if choice == HEAVY_RAIN:
+        return replace(_heavy_rain(text), pattern=PATTERN)
+    if choice == HEAVY_RAIN_EASED:
+        return replace(_eased(text), pattern=PATTERN)
+    if choice == NOT_RELEVANT:
+        return Parsed(NOT_RELEVANT, PATTERN)
     places = [c for c, _ in _places(found, answers)]
-    return T._alert(choice, PATTERN, _timed(text, places))
+    return _alert(choice, PATTERN, _timed(text, places))
 
 
 def summary(found: list[Candidate], answers: dict) -> dict:
@@ -387,4 +408,4 @@ def read_row(
         Candidate(c["text"], c["start"], c["end"])
         for c in json.loads(candidates_json or "[]")
     ]
-    return T.as_row(read(text, found, json.loads(answers_json)), posted_at)
+    return as_row(read(text, found, json.loads(answers_json)), posted_at)

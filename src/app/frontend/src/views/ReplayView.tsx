@@ -19,33 +19,50 @@ function dayFromHash(): string | null {
   return day && DAY.test(day) ? day : null;
 }
 
-/** For each area PUB alerted, whether a FloodSense warning was in force at PUB's first alert, and since when: each
- * rating warns for the hour after it, so the warning began at the first of its ratings (lib/warnings.ts). */
+/** Since when a FloodSense warning had been in force at `at` (ms), and for how many minutes: each rating warns for the
+ * hour after it, so the warning began at the first of its ratings (lib/warnings.ts). Nulls if none was. */
+function leadAt(times: number[], codes: string, at: number) {
+  const since = warnedSince(times, codes, at);
+  return {
+    warnedFrom: since == null ? null : new Date(since).toISOString(),
+    leadMin: since == null ? null : (at - since) / 60_000,
+  };
+}
+
+/** For each area PUB alerted, its first flash flood that day if it had one, and the FloodSense warning in force when
+ * it struck. */
 function compare(replay: Replay): LeadRow[] {
   const times = replay.ticks.map((t) => new Date(t).getTime());
-  const first = new Map<string, Alert[]>();
-  for (const a of replay.alerts) first.set(a.area, [...(first.get(a.area) ?? []), a]);
-  return [...first].map(([area, alerts]) => {
-    const at = new Date(alerts[0].ts).getTime();
-    const since = warnedSince(times, replay.tiers[area] ?? "", at);
-    return {
-      area,
-      firstAlert: alerts[0].ts,
-      floods: alerts.filter((a) => a.kind === "flash_flood").length,
-      warnedFrom: since == null ? null : new Date(since).toISOString(),
-      leadMin: since == null ? null : (at - since) / 60_000,
-    };
+  const areas = [...new Set(replay.alerts.map((a) => a.area))];
+  return areas.map((area) => {
+    const flood = replay.alerts.find((a) => a.area === area && a.kind === "flash_flood");
+    const lead = flood ? leadAt(times, replay.tiers[area] ?? "", new Date(flood.ts).getTime()) : null;
+    return { area, flood: flood?.ts ?? null, warnedFrom: lead?.warnedFrom ?? null, leadMin: lead?.leadMin ?? null };
   });
 }
 
-/** The ticks the timeline shows: from just before the earliest warning (or an hour before PUB's first alert) to an
- * hour after PUB's last alert. */
-function storyWindow(replay: Replay, rows: LeadRow[]): [number, number] {
+/** Every flash flood PUB reported that day, each on its own, with the FloodSense warning in force when it struck. */
+function floodLeads(replay: Replay): (Alert & ReturnType<typeof leadAt>)[] {
+  const times = replay.ticks.map((t) => new Date(t).getTime());
+  return replay.alerts
+    .filter((a) => a.kind === "flash_flood")
+    .map((a) => ({ ...a, ...leadAt(times, replay.tiers[a.area] ?? "", new Date(a.ts).getTime()) }));
+}
+
+/** The ticks the timeline shows: from just before the earliest warning in force at an area's first alert (or an hour
+ * before PUB's first alert) to an hour after PUB's last alert. */
+function storyWindow(replay: Replay): [number, number] {
   const last = replay.ticks.length - 1;
   if (!replay.alerts.length) return [0, last];
-  const t0 = new Date(replay.ticks[0]).getTime();
+  const times = replay.ticks.map((t) => new Date(t).getTime());
+  const t0 = times[0];
   const alertTimes = replay.alerts.map((a) => new Date(a.ts).getTime());
-  const warnings = rows.flatMap((r) => (r.warnedFrom ? [new Date(r.warnedFrom).getTime()] : []));
+  const firstAlert = new Map<string, number>();
+  for (const a of replay.alerts) if (!firstAlert.has(a.area)) firstAlert.set(a.area, new Date(a.ts).getTime());
+  const warnings = [...firstAlert].flatMap(([area, at]) => {
+    const since = warnedSince(times, replay.tiers[area] ?? "", at);
+    return since == null ? [] : [since];
+  });
   const start = Math.min(Math.min(...alertTimes) - HOUR_MS, ...warnings) - 15 * 60_000;
   const end = Math.max(...alertTimes) + HOUR_MS;
   const tick = (t: number) => Math.min(Math.max(Math.round((t - t0) / 300_000), 0), last);
@@ -80,8 +97,7 @@ export default function ReplayView() {
       <div className="replay-intro">
         <h1 className="headline">Replay a storm.</h1>
         <p className="headline-detail">
-          Watch FloodSense rate every area through a real storm day, next to the alerts PUB sent. FloodSense never saw
-          these storms. {list.data ? `They all came from ${longDay(list.data.from)} on, after its training data ended.` : ""}
+          Watch FloodSense rate every area through a real storm day, next to the alerts PUB sent.
         </p>
       </div>
       {list.data ? (
@@ -114,7 +130,7 @@ export default function ReplayView() {
       {chosen ? <ReplayDay key={chosen} day={chosen} /> : null}
       <AskSection
         questions={ASK_QUESTIONS.replay}
-        intro="Ask about any storm since 2021: PUB's alerts, and how far ahead FloodSense warned."
+        intro="Ask about PUB's alerts in any storm since 2021, or how long before each flash flood FloodSense warned."
       />
     </div>
   );
@@ -130,7 +146,8 @@ function ReplayDay({ day }: { day: string }) {
     [data],
   );
   const rows = useMemo(() => (data ? compare(data) : []), [data]);
-  const [from, to] = useMemo(() => (data ? storyWindow(data, rows) : [0, 0]), [data, rows]);
+  const leads = useMemo(() => (data ? floodLeads(data) : []), [data]);
+  const [from, to] = useMemo(() => (data ? storyWindow(data) : [0, 0]), [data]);
   // start an hour before PUB's first alert, so the build-up is in view
   const startIndex = useMemo(() => {
     if (!data?.alerts.length) return 0;
@@ -269,38 +286,34 @@ function ReplayDay({ day }: { day: string }) {
               : `${alsoWarned.length} areas where PUB sent no alert that day: ${alsoWarned.join(", ").replace(/, ([^,]*)$/, " and $1")}.`}
           </p>
         ) : null}
-        <details className="leads-box">
-          <summary>See these times as a table</summary>
-          <table className="leads">
-            <caption>Did FloodSense warn before PUB on {longDay(day)}?</caption>
-            <thead>
-              <tr>
-                <th scope="col">Area</th>
-                <th scope="col">PUB's first alert</th>
-                <th scope="col">FloodSense warning from</th>
-                <th scope="col">Head start</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.area}>
-                  <th scope="row">
-                    {r.area}
-                    {r.floods ? <span className="flood-tag">flash flood</span> : null}
-                  </th>
-                  <td>{clock(r.firstAlert)}</td>
-                  <td>{r.warnedFrom ? clock(r.warnedFrom) : "No warning in force"}</td>
-                  <td>{r.leadMin != null ? duration(r.leadMin) : "–"}</td>
+        {leads.length ? (
+          <details className="leads-box">
+            <summary>See these times as a table</summary>
+            <table className="leads">
+              <caption>Did FloodSense warn before the flash floods on {longDay(day)}?</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Area</th>
+                  <th scope="col">Flash flood</th>
+                  <th scope="col">FloodSense warning from</th>
+                  <th scope="col">Ahead of the flood</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </details>
-        <p className="fine-print">
-          Each Moderate or Elevated rating is a warning for the hour after it, so a bar runs an hour past the last rating.
-          Elevated shows while any Elevated rating is under an hour old. The head start runs from the first rating of the
-          warning in force when PUB sent its first alert. Ratings from model {data.model}.
-        </p>
+              </thead>
+              <tbody>
+                {leads.map((r) => (
+                  <tr key={`${r.area}|${r.ts}|${r.location}`}>
+                    <th scope="row" title={r.location}>
+                      {r.area}
+                    </th>
+                    <td>{clock(r.ts)}</td>
+                    <td>{r.warnedFrom ? clock(r.warnedFrom) : "No warning in force"}</td>
+                    <td>{r.leadMin != null ? duration(r.leadMin) : "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        ) : null}
       </div>
     </div>
   );
