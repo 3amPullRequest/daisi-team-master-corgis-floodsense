@@ -5,13 +5,16 @@ labels/alert_text.py, as silver will parse it, and a post the patterns can't rea
 matched, or one matched but found no place) gets two things:
 
 - One Jev call per post and text. `call` asks Jev (labels/jev.py) which kind of post it is and which of its phrases
-  are places, through Unity Gateway as the job's own Databricks identity, and lands the call as one line in
+  are places, as the job's own Databricks identity, and lands the call as one line in
   `telegram_jev_parses/live/` (bronze.telegram_jev_parses): when, the post, why the patterns failed, the candidate
   places, Jev's answers, its token usage and latency, or the error. That folder is the record of every use of Jev, and
   silver reads Jev's answers from it, so no call is ever repeated: `_state/telegram_jev.json` keeps the keys
   (message id and text hash) already asked. A failed call is not retried; the post waits in silver.telegram_review,
   and gold counts the label windows it could hold as missing ('post not read'). A workspace with no Jev endpoint
-  (its preview off, which costs nothing) is such a failure: `JevUnavailable`.
+  (its preview off, which costs nothing) is such a failure: `JevUnavailable`. By default the questions go not to Jev
+  but to a foundation model the workspace already serves (jev.FOUNDATION_MODEL, or --fallback-model): the same request
+  body, rendered as a chat prompt and mapped back (`jev_caller`), landed in the same shape, so everything downstream
+  still calls it Jev.
 - An email (ingest/notify.py) to the --alert-to addresses with the post's full text and Jev's reading. Sending is
   retried on later ticks for up to MAX_EMAIL_ATTEMPTS, and each failure logs the whole email as a WARNING, so the
   job's log holds it even when no SMTP account is set up.
@@ -46,7 +49,8 @@ ASK_TIMEOUT_S = 30
 
 
 class JevUnavailable(RuntimeError):
-    """The workspace has no valid Jev endpoint (Unity Gateway answers 404 ENDPOINT_NOT_FOUND): a Jev error."""
+    """The workspace has no endpoint for the model: Unity Gateway answers 404 ENDPOINT_NOT_FOUND for Jev, or no serving
+    endpoint has the foundation model's name. A Jev error like any other."""
 
 
 @dataclass
@@ -56,7 +60,7 @@ class Fallback:
     ask: Callable[[dict], dict] | None
     mailer: Mailer | None
     recipients: tuple[str, ...]
-    model: str = jev.MODEL
+    model: str = jev.FOUNDATION_MODEL
 
     def handle(
         self,
@@ -138,6 +142,9 @@ class Fallback:
                 "answers": answer.get("answers"),
                 "model_reported": answer.get("model"),
                 "usage": answer.get("usage"),
+                "reply": answer.get(
+                    "reply"
+                ),  # a foundation model's words, before mapping; None from Jev
             }
         except (
             Exception
@@ -187,8 +194,10 @@ class Fallback:
 
 
 def jev_caller(profile: str | None = None, client=None) -> Callable[[dict], dict]:
-    """Jev through Unity Gateway, as the job's identity on Databricks or as `profile` elsewhere. The workspace client is
-    made on the first call, so a tick without a fallback never authenticates."""
+    """Whoever the request body names, as the job's identity on Databricks or as `profile` elsewhere: Jev through
+    Unity Gateway for a system.ai model, else a foundation model on its serving endpoint, asked jev.prompt(body) and
+    answered in Jev's shape. The workspace client is made on the first call, so a tick without a fallback never
+    authenticates."""
     import requests
 
     made = {}
@@ -201,20 +210,44 @@ def jev_caller(profile: str | None = None, client=None) -> Callable[[dict], dict
                 WorkspaceClient(profile=profile) if profile else WorkspaceClient()
             )
         config = made["client"].config
+        host = config.host.rstrip("/")
+        model = body.get("model") or jev.MODEL
+        foundation = jev.is_foundation(model)
         resp = requests.post(
-            config.host.rstrip("/") + jev.PATH,
-            json=body,
+            f"{host}/serving-endpoints/{model}/invocations"
+            if foundation
+            else host + jev.PATH,
+            json=jev.prompt(body) if foundation else body,
             headers={**config.authenticate(), "Content-Type": "application/json"},
             timeout=ASK_TIMEOUT_S,
         )
-        if resp.status_code == 404 and "ENDPOINT_NOT_FOUND" in resp.text:
+        if resp.status_code == 404 and (
+            "ENDPOINT_NOT_FOUND" in resp.text or "RESOURCE_DOES_NOT_EXIST" in resp.text
+        ):
             raise JevUnavailable(
-                f"no valid endpoint for {body.get('model')} in this workspace (HTTP 404 ENDPOINT_NOT_FOUND; "
-                "the TypeSafe AI preview is off)"
+                f"no valid endpoint for {model} in this workspace (HTTP 404; "
+                + (
+                    "no serving endpoint has that name)"
+                    if foundation
+                    else "the TypeSafe AI preview is off)"
+                )
             )
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-        return resp.json()
+        reply = resp.json()
+        if not foundation:
+            return reply
+        content = (reply.get("choices") or [{}])[0].get("message", {}).get("content")
+        usage = reply.get("usage") or {}
+        return {
+            "model": reply.get("model"),
+            "answers": jev.answers_from_chat(content, body["questions"]),
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens"),
+                "output_tokens": usage.get("completion_tokens"),
+            },
+            "reply": content,
+        }
 
     return ask
 
@@ -230,8 +263,18 @@ def add_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="don't ask Jev about posts no pattern reads (still email them)",
     )
+    add_model_arg(parser)
     parser.add_argument("--smtp-host", default="smtp.gmail.com")
     parser.add_argument("--smtp-port", type=int, default=465)
+
+
+def add_model_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--fallback-model",
+        default=os.environ.get("FLOODSENSE_FALLBACK_MODEL", jev.FOUNDATION_MODEL),
+        help="who reads a post no pattern reads: a foundation-model serving endpoint, or Jev as "
+        f"{jev.MODEL} (env FLOODSENSE_FALLBACK_MODEL)",
+    )
 
 
 def from_args(args: argparse.Namespace, sink: Sink) -> Fallback:
@@ -252,7 +295,7 @@ def from_args(args: argparse.Namespace, sink: Sink) -> Fallback:
     ask = (
         None if args.no_jev else jev_caller(args.profile, getattr(sink, "client", None))
     )
-    return Fallback(ask, mailer, recipients)
+    return Fallback(ask, mailer, recipients, args.fallback_model)
 
 
 # --- check_parser_alert.py: the alert end to end, on a made-up post ------------------------------------------------
@@ -285,6 +328,7 @@ def check(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--email-to", default="", help="comma-separated addresses for the test email"
     )
+    add_model_arg(parser)
     parser.add_argument("--smtp-host", default="smtp.gmail.com")
     parser.add_argument("--smtp-port", type=int, default=465)
     args = parser.parse_args(argv)
@@ -292,7 +336,10 @@ def check(argv: list[str] | None = None) -> int:
     started = S.utcnow()
     parsed = T.parse(CHECK_POST["text"])
     fallback = Fallback(
-        jev_caller(args.profile, getattr(sink, "client", None)), None, ()
+        jev_caller(args.profile, getattr(sink, "client", None)),
+        None,
+        (),
+        args.fallback_model,
     )
     record = fallback.call(CHECK_POST, parsed, runner=args.runner, purpose="test")
     path = S.run_path(S.TELEGRAM_JEV, "test", started)

@@ -7,6 +7,9 @@ import { type Place, useSubscriptionIds } from "../lib/places";
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const SG_MOBILE = /^(?:\+?65)?[89]\d{7}$/; // the server checks the same
 const MAX_AREAS = 10;
+// Texts are off (31 Oct): Singapore relabels an unregistered SMS sender "Likely-SCAM", and registering one needs a UEN.
+// The server and broadcast.py still accept "sms", so putting it back is one line here.
+const CHANNELS = ["email"] as const satisfies readonly ("email" | "sms")[];
 
 type Props = {
   areas: string[]; // all 47, for adding one by name
@@ -14,7 +17,7 @@ type Props = {
   shown: string | null; // the area in the card now
 };
 
-/** Sign up for FloodSense's warnings by email or text for chosen areas, and see or stop the ones already made.
+/** Sign up for FloodSense's warnings by email for chosen areas, and see or stop the ones already made.
  * Following the visitor's own location is shown, switched off, as coming soon. */
 export function Subscribe({ areas, places, shown }: Props) {
   const { ids, remember, forget } = useSubscriptionIds();
@@ -26,7 +29,7 @@ export function Subscribe({ areas, places, shown }: Props) {
 
   return (
     <section className="subscribe" aria-labelledby={title}>
-      <h2 id={title}>Warnings by email or text</h2>
+      <h2 id={title}>Warnings by email</h2>
       <p className="subscribe-intro">
         Get a message when FloodSense warns for your places. Each warning covers the next hour.
       </p>
@@ -82,7 +85,7 @@ export function Subscribe({ areas, places, shown }: Props) {
         />
       ) : (
         <button type="button" className="secondary" onClick={() => setOpen(true)}>
-          Get warnings by email or text
+          Get warnings by email
         </button>
       )}
     </section>
@@ -115,7 +118,7 @@ function SignUp({ areas, places, shown, onDone, onCancel }: SignUpProps) {
   }, [places, shown]);
   const [added, setAdded] = useState<string[]>([]);
   const [picked, setPicked] = useState<string[]>(() => [...new Set(options.map((p) => p.area))]);
-  const [channel, setChannel] = useState<"email" | "sms">("email");
+  const [channel, setChannel] = useState<"email" | "sms">(CHANNELS[0]);
   const [address, setAddress] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -195,22 +198,24 @@ function SignUp({ areas, places, shown, onDone, onCancel }: SignUpProps) {
 
       <fieldset>
         <legend>Send them by</legend>
-        <div className="advice-tabs" role="radiogroup" aria-label="Send them by">
-          {(["email", "sms"] as const).map((c) => (
-            <button
-              key={c}
-              type="button"
-              role="radio"
-              aria-checked={channel === c}
-              onClick={() => {
-                setChannel(c);
-                setMessage(null);
-              }}
-            >
-              {c === "email" ? "Email" : "Text message"}
-            </button>
-          ))}
-        </div>
+        {CHANNELS.length > 1 ? (
+          <div className="advice-tabs" role="radiogroup" aria-label="Send them by">
+            {CHANNELS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                role="radio"
+                aria-checked={channel === c}
+                onClick={() => {
+                  setChannel(c);
+                  setMessage(null);
+                }}
+              >
+                {c === "email" ? "Email" : "Text message"}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <label htmlFor={addressId} className="signup-label">
           {channel === "email" ? "Email address" : "Singapore mobile number"}
         </label>
