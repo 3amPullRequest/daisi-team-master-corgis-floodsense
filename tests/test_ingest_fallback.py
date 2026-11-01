@@ -272,7 +272,7 @@ def test_no_jev_endpoint_is_a_jev_failure_and_the_email_says_so(tmp_path, monkey
     no_endpoint(monkeypatch)
     ask = FB.jev_caller(client=type("Client", (), {"config": FakeConfig()})())
     mailer = FakeMailer()
-    summary = FB.Fallback(ask, mailer, TEAM).handle(
+    summary = FB.Fallback(ask, mailer, TEAM, FB.jev.MODEL).handle(
         LocalSink(tmp_path), [NEW_POST], started=NOW, runner="test"
     )
     assert summary["jev_errors"] == 1 and summary["emailed"] == 1
@@ -315,3 +315,127 @@ def test_a_sender_that_is_not_an_address_is_refused_before_connecting():
                 {"message_id": 1, "status": "skipped", "text": "x"}, ["a@b.c"]
             )
         )
+
+
+# --- a foundation model in Jev's place -----------------------------------------------------------------------------
+
+
+def chat_endpoint(monkeypatch, status: int = 200, content: str | None = None):
+    """requests.post answering as a foundation-model serving endpoint does, recording what it was sent."""
+    import requests
+
+    sent = []
+
+    class Resp:
+        status_code = status
+        text = (
+            '{"error_code":"RESOURCE_DOES_NOT_EXIST","message":"Endpoint with name not found"}'
+            if status == 404
+            else ""
+        )
+
+        @staticmethod
+        def json():
+            return {
+                "model": "meta-llama-3.3-70b-instruct-121024",
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": content}}
+                ],
+                "usage": {
+                    "prompt_tokens": 700,
+                    "completion_tokens": 90,
+                    "total_tokens": 790,
+                },
+            }
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        return Resp()
+
+    monkeypatch.setattr(requests, "post", post)
+    return sent
+
+
+def test_by_default_a_foundation_model_reads_the_post_in_jevs_place(
+    tmp_path, monkeypatch
+):
+    from tests.test_labels_jev import chat_reply
+
+    found = FB.jev.candidates(NEW_FORMAT)
+    sent = chat_endpoint(
+        monkeypatch,
+        content=chat_reply(
+            found, C.FLASH_FLOOD, {"Bukit Timah Rd (towards Clementi Rd)"}
+        ),
+    )
+    ask = FB.jev_caller(client=type("Client", (), {"config": FakeConfig()})())
+    mailer = FakeMailer()
+    fallback = FB.Fallback(ask, mailer, TEAM)
+    assert fallback.model == FB.jev.FOUNDATION_MODEL
+    summary = fallback.handle(
+        LocalSink(tmp_path), [NEW_POST], started=NOW, runner="test"
+    )
+    assert (
+        summary["jev_calls"] == 1
+        and summary["jev_errors"] == 0
+        and summary["emailed"] == 1
+    )
+
+    (request,) = sent
+    assert (
+        request["url"]
+        == f"https://workspace.example/serving-endpoints/{FB.jev.FOUNDATION_MODEL}/invocations"
+    )
+    assert request["headers"]["Authorization"] == "Bearer not-a-real-token"
+    assert request["json"]["response_format"] == {"type": "json_object"}
+    assert T.normalize(NEW_FORMAT) in request["json"]["messages"][1]["content"]
+
+    (call,) = landed_calls(tmp_path)
+    assert call["status"] == "ok" and call["model"] == FB.jev.FOUNDATION_MODEL
+    assert call["model_reported"] == "meta-llama-3.3-70b-instruct-121024"
+    assert call["usage"] == {"input_tokens": 700, "output_tokens": 90}
+    assert json.loads(call["reply"])["category"]["choice"] == C.FLASH_FLOOD
+    assert call["answers"]["category"]["choice"] == C.FLASH_FLOOD
+    # silver reads the landed call exactly as Jev's
+    row = FB.jev.read_row(
+        NEW_FORMAT,
+        NEW_POST["posted_at"],
+        json.dumps(call["candidates"]),
+        json.dumps(call["answers"]),
+    )
+    assert row["category"] == C.FLASH_FLOOD and row["pattern"] == "jev"
+
+    (email,) = mailer.sent
+    body = email.get_content()
+    assert "Did Jev fail? No." in body and "read_by = 'jev'" in body
+    assert (
+        "Jev read it as flash_flood (90% sure): Bukit Timah Rd (towards Clementi Rd) at 15:21."
+        in body
+    )
+    assert f"Read by {FB.jev.FOUNDATION_MODEL}." in body
+
+
+def test_a_reply_that_is_not_json_is_landed_as_an_error(tmp_path, monkeypatch):
+    chat_endpoint(monkeypatch, content="Sorry, I can't tell.")
+    ask = FB.jev_caller(client=type("Client", (), {"config": FakeConfig()})())
+    summary = FB.Fallback(ask, FakeMailer(), TEAM).handle(
+        LocalSink(tmp_path), [NEW_POST], started=NOW, runner="test"
+    )
+    assert summary["jev_errors"] == 1
+    (call,) = landed_calls(tmp_path)
+    assert call["status"] == "error" and call["error"].startswith(
+        "ValueError: the reply holds no JSON object"
+    )
+
+
+def test_a_missing_serving_endpoint_is_a_jev_failure_too(tmp_path, monkeypatch):
+    chat_endpoint(monkeypatch, status=404)
+    ask = FB.jev_caller(client=type("Client", (), {"config": FakeConfig()})())
+    FB.Fallback(ask, None, (), "databricks-no-such-model").handle(
+        LocalSink(tmp_path), [NEW_POST], started=NOW, runner="test"
+    )
+    (call,) = landed_calls(tmp_path)
+    assert call["error"] == (
+        "JevUnavailable: no valid endpoint for databricks-no-such-model in this workspace (HTTP 404; "
+        "no serving endpoint has that name)"
+    )

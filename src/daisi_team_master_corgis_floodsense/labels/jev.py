@@ -20,6 +20,13 @@ though, and a post is read in three steps:
 The answers are landed as they came (bronze.telegram_jev_parses, one row per call), and silver reads them again with
 `read_row`, so changing a threshold here re-reads every past call without asking Jev again. Like alert_text, this
 module uses only the standard library; the HTTP call is the caller's (ingest/fallback.py).
+
+Jev is paid, and served only in a workspace with the TypeSafe AI preview on. In its place, as a proof of concept, a
+chat model from the workspace's own foundation-model endpoints (FOUNDATION_MODEL) answers the same request: `prompt`
+writes the request's questions out as one message that asks for JSON, and `answers_from_chat` maps the reply back
+into Jev's answer shape, so `read`, silver and the parser alert see no difference and a post it read is still marked
+'jev'. The three steps above are unchanged; only the answerer is. Its confidences are the model's own word, not
+calibrated probabilities, so CATEGORY_MIN and PLACE_MIN cut more coarsely than they did for Jev.
 """
 
 from __future__ import annotations
@@ -34,6 +41,13 @@ from . import alert_text as T
 MODEL = "system.ai.typesafeai-jev-1-14-0"
 PATH = "/ai-gateway/typesafe/v1/systemone"
 PATTERN = "jev"  # silver.telegram_posts.pattern (and method) of a post Jev read
+
+# The chat model that stands in for Jev: one of the foundation-model endpoints every workspace serves (Free Edition
+# included), asked through /serving-endpoints/<name>/invocations. Any name not under system.ai. is read this way.
+FOUNDATION_MODEL = "databricks-meta-llama-3-3-70b-instruct"
+MAX_REPLY_TOKENS = (
+    800  # the category and up to MAX_CANDIDATES places, about 30 tokens each
+)
 
 # Below these, Jev's answer isn't used: the post stays unmatched (category) or the phrase isn't a place.
 CATEGORY_MIN = 0.6
@@ -143,17 +157,20 @@ def candidates(text: str | None) -> list[Candidate]:
     return ordered[:MAX_CANDIDATES]
 
 
+PLACE_CRITERIA = {
+    "true": "The phrase is that place's name as the post writes it, with any qualifier that is part of the "
+    "location (such as 'towards ECP' or 'between X and Y'), and no other words.",
+    "false": "The phrase is not such a place, or it also holds other words: the alert's wording, a time, "
+    "or an instruction.",
+}
+
+
 def _place_question(phrase: str) -> dict:
     return {
         "type": "noul",
         "instructions": f'Is "{phrase}" the name of a place in Singapore (a road, junction, canal, block or '
         "landmark) that this post reports a flood risk, a flash flood or a subsided flood at?",
-        "criteria": {
-            "true": "The phrase is that place's name as the post writes it, with any qualifier that is part of the "
-            "location (such as 'towards ECP' or 'between X and Y'), and no other words.",
-            "false": "The phrase is not such a place, or it also holds other words: the alert's wording, a time, "
-            "or an instruction.",
-        },
+        "criteria": PLACE_CRITERIA,
     }
 
 
@@ -169,6 +186,122 @@ def request(text: str | None, found: list[Candidate], model: str = MODEL) -> dic
         },
         "questions": questions,
     }
+
+
+# --- a foundation model in Jev's place -----------------------------------------------------------------------------
+
+
+def is_foundation(model: str) -> bool:
+    """A chat model on a serving endpoint, rather than Jev through Unity Gateway (system.ai.*)."""
+    return not model.startswith("system.ai.")
+
+
+_SYSTEM = (
+    "You read posts from PUB Flood Alerts, the Telegram channel of PUB, Singapore's national water agency, and answer "
+    "fixed questions about one post. Reply with one JSON object and nothing else: no prose, no code fence. Give every "
+    "answer a confidence from 0 to 1, how sure you are of it; be honest, and use values below 0.5 when unsure."
+)
+_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def prompt(body: dict) -> dict:
+    """The chat-completion request that puts a `request` body's questions to a foundation model: the post, the
+    category question with its options, each place question (their shared criteria stated once), and the JSON shape to
+    answer in. Deterministic (temperature 0) and asked for a JSON object, which the endpoint enforces where it can."""
+    questions = body["questions"]
+    choices = {k: q for k, q in questions.items() if q["type"] == "choice"}
+    places = {k: q for k, q in questions.items() if q["type"] == "noul"}
+    lines = [
+        f"Channel: {body['state']['channel']}",
+        "",
+        "The post, between the markers:",
+        "<<<",
+        body["state"]["post"],
+        ">>>",
+        "",
+    ]
+    shape: dict[str, dict] = {}
+    for key, q in choices.items():
+        lines += [f"{key}: {q['instructions']} One of:"]
+        lines += [f"  - {name}: {meaning}" for name, meaning in q["criteria"].items()]
+        lines.append("")
+        shape[key] = {"choice": "one of " + ", ".join(q["criteria"]), "confidence": 0.0}
+    if places:
+        criteria = next(iter(places.values()))["criteria"]
+        lines += [
+            "Then one yes-or-no question per phrase. Answer true or false by these rules:",
+            f"  true: {criteria['true']}",
+            f"  false: {criteria['false']}",
+            "",
+        ]
+        for key, q in places.items():
+            lines.append(f"{key}: {q['instructions']}")
+            shape[key] = {"answer": False, "confidence": 0.0}
+        lines.append("")
+    # the endpoint refuses response_format json_object unless the messages say "json" themselves
+    lines += [
+        "Reply in json with exactly these keys, in this shape:",
+        json.dumps(shape, indent=1),
+    ]
+    return {
+        "messages": [
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user", "content": "\n".join(lines)},
+        ],
+        "temperature": 0,
+        "max_tokens": MAX_REPLY_TOKENS,
+        "response_format": {"type": "json_object"},
+    }
+
+
+def _unit(value, default: float) -> float | None:
+    """A confidence as a number in [0, 1]: `default` when not given, None when given but not a number."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return None
+    try:
+        return min(max(float(value), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def answers_from_chat(content: str | None, questions: dict) -> dict:
+    """A chat model's JSON reply as Jev's answers: for the category, its `choice` and `confidence`; for each place
+    question a `noul`, the probability of yes (the confidence when it answered true, one minus it when false). An
+    answer missing, malformed or naming no option is left out, so `read` treats it as unsure. A reply with no JSON
+    object at all is an error, landed like an HTTP one."""
+    match = _JSON_OBJECT.search(content or "")
+    if not match:
+        raise ValueError(f"the reply holds no JSON object: {(content or '')[:200]!r}")
+    reply = json.loads(match.group())
+    answers: dict[str, dict] = {}
+    for key, question in questions.items():
+        given = reply.get(key)
+        if not isinstance(given, dict):
+            continue
+        confidence = _unit(given.get("confidence"), 1.0)
+        if confidence is None:
+            continue
+        if question["type"] == "choice":
+            choice = given.get("choice")
+            if choice in question["criteria"]:
+                answers[key] = {
+                    "type": "choice",
+                    "choice": choice,
+                    "confidence": confidence,
+                    "probabilities": {choice: confidence},
+                }
+        else:
+            answer = given.get("answer")
+            if isinstance(answer, str):
+                answer = {"true": True, "false": False}.get(answer.strip().lower())
+            if isinstance(answer, bool):
+                answers[key] = {
+                    "type": "noul",
+                    "noul": confidence if answer else 1 - confidence,
+                }
+    return answers
 
 
 def _stamps(text: str) -> list[tuple[int, str]]:

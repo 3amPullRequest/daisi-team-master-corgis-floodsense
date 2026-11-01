@@ -155,7 +155,7 @@ def parser_alert(record: dict, recipients: list[str]) -> EmailMessage:
         "",
         (
             f"Sent by FloodSense's live fetch ({record.get('runner')}), {_sgt(record.get('fetched_at'))}. "
-            f"Jev: {record.get('model')}."
+            f"Read by {record.get('model')}."
         ),
     ]
     message = EmailMessage()
